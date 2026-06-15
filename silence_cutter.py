@@ -37,8 +37,10 @@ TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 DEFAULT_APP_VERSION = "1.1.7"
 PRESETS_FILENAME = "presets_ajustes.json"
 UPDATE_CONFIG_FILENAME = "update_config.json"
-DEFAULT_UPDATE_ENDPOINT_URL = "https://key-flow-core.base44.app/functions/update"
-DEFAULT_DOWNLOAD_URL = "http://key-flow-core.base44.com/functions/downloadLatest"
+DEFAULT_GITHUB_REPO = "SombraLaen/Encut"
+DEFAULT_GITHUB_BRANCH = "main"
+DEFAULT_UPDATE_ENDPOINT_URL = "https://api.github.com/repos/SombraLaen/Encut/releases/latest"
+DEFAULT_DOWNLOAD_URL = ""
 VERSION_TRACKED_FILES = (
     "silence_cutter.py",
     "README.md",
@@ -386,6 +388,8 @@ def default_update_config() -> dict[str, object]:
     return {
         "enabled": True,
         "check_on_startup": True,
+        "github_repo": DEFAULT_GITHUB_REPO,
+        "github_branch": DEFAULT_GITHUB_BRANCH,
         "manifest_url": DEFAULT_UPDATE_ENDPOINT_URL,
     }
 
@@ -457,6 +461,47 @@ def _fetch_update_payload(update_url: str, timeout: int) -> object:
     return payload
 
 
+def _github_repo_slug(value: str) -> str:
+    value = value.strip().strip("/")
+    if not value:
+        return ""
+    value = re.sub(r"^https?://github\.com/", "", value, flags=re.IGNORECASE).strip("/")
+    value = re.sub(r"\.git$", "", value, flags=re.IGNORECASE)
+    parts = [part for part in value.split("/") if part]
+    if len(parts) < 2:
+        return ""
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _github_latest_release_url(repo: str) -> str:
+    slug = _github_repo_slug(repo)
+    if not slug:
+        raise RuntimeError("Repositorio GitHub invalido. Use o formato dono/repositorio.")
+    return f"https://api.github.com/repos/{slug}/releases/latest"
+
+
+def _github_raw_url(repo: str, branch: str, path: str) -> str:
+    slug = _github_repo_slug(repo)
+    if not slug:
+        raise RuntimeError("Repositorio GitHub invalido. Use o formato dono/repositorio.")
+    branch = urllib.parse.quote((branch or DEFAULT_GITHUB_BRANCH).strip(), safe="")
+    path = "/".join(urllib.parse.quote(part, safe="") for part in path.strip("/").split("/"))
+    return f"https://raw.githubusercontent.com/{slug}/{branch}/{path}"
+
+
+def _fetch_update_text(update_url: str, timeout: int) -> str:
+    request = urllib.request.Request(
+        update_url,
+        headers={
+            "Accept": "text/plain, application/octet-stream",
+            "User-Agent": f"Encut/{APP_VERSION}",
+        },
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read(1024 * 1024).decode("utf-8-sig", errors="replace").strip()
+
+
 def _candidate_value(data: dict[str, object], names: tuple[str, ...]) -> str:
     lowered = {str(key).lower(): value for key, value in data.items()}
     for name in names:
@@ -465,6 +510,77 @@ def _candidate_value(data: dict[str, object], names: tuple[str, ...]) -> str:
             continue
         return str(value).strip()
     return ""
+
+
+def _sha256_from_github_asset(asset: dict[str, object]) -> str:
+    digest = _candidate_value(asset, ("digest",))
+    if digest.lower().startswith("sha256:"):
+        return digest.split(":", 1)[1].strip().lower()
+    return _candidate_value(asset, ("sha256", "sha_256", "hash", "checksum")).lower()
+
+
+def _update_from_github_release(data: dict[str, object], release_url: str) -> Optional[UpdateInfo]:
+    version = _candidate_value(data, ("tag_name", "name", "version"))
+    version = re.sub(r"^[vV]", "", version).strip()
+    assets = data.get("assets")
+    if not version or not isinstance(assets, list):
+        return None
+
+    setup_url = ""
+    zip_url = ""
+    sha256 = ""
+
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        name = _candidate_value(asset, ("name",))
+        download_url = _candidate_value(asset, ("browser_download_url", "download_url", "url"))
+        if not download_url:
+            continue
+        lower_name = name.lower()
+        lower_url = download_url.lower()
+        if not setup_url and lower_name.endswith(".exe") and ("setup" in lower_name or "encut" in lower_name):
+            setup_url = download_url
+            sha256 = _sha256_from_github_asset(asset)
+        elif not zip_url and lower_name.endswith(".zip") and "encut" in lower_name:
+            zip_url = download_url
+            if not sha256:
+                sha256 = _sha256_from_github_asset(asset)
+        elif not setup_url and lower_url.endswith(".exe"):
+            setup_url = download_url
+            sha256 = _sha256_from_github_asset(asset)
+        elif not zip_url and lower_url.endswith(".zip"):
+            zip_url = download_url
+            if not sha256:
+                sha256 = _sha256_from_github_asset(asset)
+
+    if not setup_url and not zip_url:
+        return None
+
+    return UpdateInfo(
+        version=version,
+        zip_url=zip_url,
+        setup_url=setup_url,
+        sha256=sha256,
+        notes=_candidate_value(data, ("body", "notes", "changelog", "description")).strip(),
+    )
+
+
+def _update_from_github_repository(repo: str, branch: str, timeout: int) -> Optional[UpdateInfo]:
+    version_url = _github_raw_url(repo, branch, "VERSION")
+    version = _fetch_update_text(version_url, timeout)
+    version = re.sub(r"^[vV]", "", version).strip()
+    if not version:
+        return None
+
+    setup_url = _github_raw_url(repo, branch, "EncutSetup.exe")
+    notes = ""
+    try:
+        notes = _fetch_update_text(_github_raw_url(repo, branch, "CHANGELOG.md"), timeout)
+    except Exception:
+        notes = ""
+
+    return UpdateInfo(version=version, setup_url=setup_url, notes=notes[:4000])
 
 
 def _normalize_download_url(download_url: str) -> str:
@@ -527,13 +643,26 @@ def _collect_update_candidates(payload: object, base_url: str) -> list[UpdateInf
     return candidates
 
 
-def check_for_update(manifest_url: str, timeout: int = 20) -> Optional[UpdateInfo]:
+def check_for_update(manifest_url: str = "", timeout: int = 20, github_repo: str = "", github_branch: str = DEFAULT_GITHUB_BRANCH) -> Optional[UpdateInfo]:
+    github_repo = github_repo.strip()
     manifest_url = manifest_url.strip()
+    if github_repo:
+        manifest_url = _github_latest_release_url(github_repo)
     if not manifest_url:
-        raise RuntimeError("URL do manifesto de atualizacao nao configurada.")
+        raise RuntimeError("Fonte de atualizacao nao configurada. Informe github_repo ou manifest_url.")
 
-    payload = _fetch_update_payload(manifest_url, timeout)
-    candidates = [candidate for candidate in _collect_update_candidates(payload, manifest_url) if is_newer_version(candidate.version)]
+    if github_repo:
+        try:
+            payload = _fetch_update_payload(manifest_url, timeout)
+            if not isinstance(payload, dict):
+                raise RuntimeError("Resposta do GitHub invalida. O endpoint precisa retornar um release JSON.")
+            update = _update_from_github_release(payload, manifest_url)
+        except Exception:
+            update = _update_from_github_repository(github_repo, github_branch, timeout)
+        candidates = [update] if update and is_newer_version(update.version) else []
+    else:
+        payload = _fetch_update_payload(manifest_url, timeout)
+        candidates = [candidate for candidate in _collect_update_candidates(payload, manifest_url) if is_newer_version(candidate.version)]
     if not candidates:
         return None
 
@@ -2590,7 +2719,7 @@ class SilenceCutterApp:
         update_group.pack(side="left")
         self.update_button = ttk.Button(update_group, text="Atualizar", command=lambda: self._check_updates(auto=False))
         self.update_button.pack(side="left")
-        self._help_icon(update_group, "Verifica no site configurado se existe uma versao nova do Encut. Se houver, baixa o pacote, confere o SHA256 quando informado e executa o instalador automaticamente.").pack(side="left", padx=(4, 0))
+        self._help_icon(update_group, "Verifica no GitHub Releases configurado se existe uma versao nova do Encut. Se houver, baixa o pacote, confere o SHA256 quando informado e executa o instalador automaticamente.").pack(side="left", padx=(4, 0))
 
         ttk.Label(main, textvariable=self.status_var).grid(row=11, column=0, columnspan=3, sticky="w")
 
@@ -2765,7 +2894,8 @@ class SilenceCutterApp:
 
     def _check_updates_on_startup(self) -> None:
         config = load_update_config()
-        if bool(config.get("enabled", True)) and bool(config.get("check_on_startup", True)) and str(config.get("manifest_url", "")).strip():
+        has_source = str(config.get("github_repo", "")).strip() or str(config.get("manifest_url", "")).strip()
+        if bool(config.get("enabled", True)) and bool(config.get("check_on_startup", True)) and has_source:
             self._check_updates(auto=True)
 
     def _check_updates(self, auto: bool = False) -> None:
@@ -2781,12 +2911,14 @@ class SilenceCutterApp:
     def _run_update_check(self, auto: bool) -> None:
         try:
             config = load_update_config()
+            github_repo = str(config.get("github_repo", "")).strip()
+            github_branch = str(config.get("github_branch", DEFAULT_GITHUB_BRANCH)).strip() or DEFAULT_GITHUB_BRANCH
             manifest_url = str(config.get("manifest_url", "")).strip()
-            if not bool(config.get("enabled", True)) or not manifest_url:
+            if not bool(config.get("enabled", True)) or not (github_repo or manifest_url):
                 if not auto:
-                    self.events.put(("update_status", "Atualizacao nao configurada. Informe a URL do update.json em update_config.json."))
+                    self.events.put(("update_status", "Atualizacao nao configurada. Informe github_repo ou manifest_url em update_config.json."))
                 return
-            update = check_for_update(manifest_url)
+            update = check_for_update(manifest_url, github_repo=github_repo, github_branch=github_branch)
             if update is None:
                 if not auto:
                     self.events.put(("update_status", f"Encut ja esta atualizado (v{APP_VERSION})."))
@@ -2951,21 +3083,26 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", help="Pasta de saida para o modo lote")
     parser.add_argument("--suffix", default="_sem_silencio", help="Sufixo dos arquivos gerados no modo lote")
     parser.add_argument("--gui", action="store_true", help="Abrir interface grafica")
-    parser.add_argument("--check-update", action="store_true", help="Verificar atualizacao pelo manifesto configurado")
+    parser.add_argument("--check-update", action="store_true", help="Verificar atualizacao pelo GitHub Releases ou manifesto configurado")
     parser.add_argument("--install-update", action="store_true", help="Baixar e instalar a atualizacao se houver")
     parser.add_argument("--update-manifest", help="URL do update.json usado para verificar atualizacoes")
+    parser.add_argument("--github-repo", help="Repositorio GitHub usado para verificar releases, ex: SombraLaen/Encut")
+    parser.add_argument("--github-branch", default="", help="Branch usado como fallback quando nao houver release no GitHub")
     return parser.parse_args(argv)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = parse_args(argv)
     if args.check_update or args.install_update:
-        manifest_url = args.update_manifest or str(load_update_config().get("manifest_url", "")).strip()
-        if not manifest_url:
-            print("Atualizacao nao configurada. Informe --update-manifest ou preencha update_config.json.", file=sys.stderr)
+        config = load_update_config()
+        github_repo = args.github_repo or str(config.get("github_repo", "")).strip()
+        github_branch = args.github_branch or str(config.get("github_branch", DEFAULT_GITHUB_BRANCH)).strip() or DEFAULT_GITHUB_BRANCH
+        manifest_url = args.update_manifest or str(config.get("manifest_url", "")).strip()
+        if not github_repo and not manifest_url:
+            print("Atualizacao nao configurada. Informe --github-repo, --update-manifest ou preencha update_config.json.", file=sys.stderr)
             return 2
         try:
-            update = check_for_update(manifest_url)
+            update = check_for_update(manifest_url, github_repo=github_repo, github_branch=github_branch)
         except Exception as exc:
             print(f"Erro ao verificar atualizacao: {exc}", file=sys.stderr)
             return 1
@@ -3015,10 +3152,6 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-
-
 
 
 

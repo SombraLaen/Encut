@@ -1,5 +1,7 @@
-﻿{
-    "enabled":  true,
-    "check_on_startup":  true,
-    "manifest_url":  "https://key-flow-core.base44.app/functions/update"
+{
+  "enabled": true,
+  "check_on_startup": true,
+  "github_repo": "SombraLaen/Encut",
+  "github_branch": "main",
+  "manifest_url": "https://api.github.com/repos/SombraLaen/Encut/releases/latest"
 }

@@ -24,8 +24,10 @@ internal static class Program
     private const string PythonVersion = "3.12.10";
     private const string PythonUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe";
     private const string FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
-    private const string DefaultUpdateEndpointUrl = "https://key-flow-core.base44.app/functions/update";
-    private const string DefaultDownloadUrl = "http://key-flow-core.base44.com/functions/downloadLatest";
+    private const string DefaultGitHubRepo = "SombraLaen/Encut";
+    private const string DefaultGitHubBranch = "main";
+    private const string DefaultUpdateEndpointUrl = "https://api.github.com/repos/SombraLaen/Encut/releases/latest";
+    private const string DefaultDownloadUrl = "";
 
     private static readonly Dictionary<string, string> EmbeddedFiles = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -222,6 +224,8 @@ internal static class Program
             "{\r\n" +
             "  \"enabled\": true,\r\n" +
             "  \"check_on_startup\": true,\r\n" +
+            "  \"github_repo\": \"" + JsonEscape(DefaultGitHubRepo) + "\",\r\n" +
+            "  \"github_branch\": \"" + JsonEscape(DefaultGitHubBranch) + "\",\r\n" +
             "  \"manifest_url\": \"" + JsonEscape(DefaultUpdateEndpointUrl) + "\"\r\n" +
             "}\r\n";
 
@@ -230,17 +234,20 @@ internal static class Program
             if (!File.Exists(path))
             {
                 File.WriteAllText(path, defaultConfig, Encoding.UTF8);
-                log.Write("Configuracao de atualizacao criada: " + DefaultUpdateEndpointUrl);
+                log.Write("Configuracao de atualizacao criada: GitHub " + DefaultGitHubRepo);
                 return;
             }
 
             string config = File.ReadAllText(path, Encoding.UTF8);
+            config = EnsureJsonStringProperty(config, "github_repo", DefaultGitHubRepo);
+            config = EnsureJsonStringProperty(config, "github_branch", DefaultGitHubBranch);
             Match match = Regex.Match(config, "\"manifest_url\"\\s*:\\s*\"(?<value>(?:\\\\.|[^\"])*)\"");
             if (match.Success)
             {
                 string current = JsonUnescape(match.Groups["value"].Value).Trim();
                 if (!string.IsNullOrWhiteSpace(current) && !IsLegacyUpdateEndpoint(current))
                 {
+                    File.WriteAllText(path, config, Encoding.UTF8);
                     log.Write("Configuracao de atualizacao preservada: " + current);
                     return;
                 }
@@ -248,7 +255,7 @@ internal static class Program
                 string replacement = "\"manifest_url\": \"" + JsonEscape(DefaultUpdateEndpointUrl) + "\"";
                 config = config.Substring(0, match.Index) + replacement + config.Substring(match.Index + match.Length);
                 File.WriteAllText(path, config, Encoding.UTF8);
-                log.Write("Configuracao de atualizacao preenchida: " + DefaultUpdateEndpointUrl);
+                log.Write("Configuracao de atualizacao preenchida: GitHub " + DefaultGitHubRepo);
                 return;
             }
 
@@ -264,7 +271,7 @@ internal static class Program
                 string after = trimmed.Substring(closeIndex);
                 config = before + "\r\n  \"manifest_url\": \"" + JsonEscape(DefaultUpdateEndpointUrl) + "\"\r\n" + after + "\r\n";
                 File.WriteAllText(path, config, Encoding.UTF8);
-                log.Write("Configuracao de atualizacao adicionada: " + DefaultUpdateEndpointUrl);
+                log.Write("Configuracao de atualizacao adicionada: GitHub " + DefaultGitHubRepo);
                 return;
             }
         }
@@ -275,8 +282,33 @@ internal static class Program
         }
 
         File.WriteAllText(path, defaultConfig, Encoding.UTF8);
-        log.Write("Configuracao de atualizacao recriada: " + DefaultUpdateEndpointUrl);
+        log.Write("Configuracao de atualizacao recriada: GitHub " + DefaultGitHubRepo);
     }
+
+    private static string EnsureJsonStringProperty(string config, string propertyName, string value)
+    {
+        Match match = Regex.Match(config, "\"" + Regex.Escape(propertyName) + "\"\\s*:");
+        if (match.Success)
+        {
+            return config;
+        }
+
+        string trimmed = config.TrimEnd();
+        int closeIndex = trimmed.LastIndexOf('}');
+        if (closeIndex < 0)
+        {
+            return config;
+        }
+
+        string before = trimmed.Substring(0, closeIndex).TrimEnd();
+        if (!before.EndsWith("{", StringComparison.Ordinal))
+        {
+            before += ",";
+        }
+        string after = trimmed.Substring(closeIndex);
+        return before + "\r\n  \"" + propertyName + "\": \"" + JsonEscape(value) + "\"\r\n" + after + "\r\n";
+    }
+
     private static void InstallPython(string runtimeDir, string downloadDir, InstallerLog log)
     {
         string pythonDir = Path.Combine(runtimeDir, "python");
@@ -367,6 +399,7 @@ internal static class Program
     {
         return !string.IsNullOrWhiteSpace(url) &&
             (url.IndexOf("api.base44.com/api/apps/6a0a893b79eb8fdc64346940/functions/update", StringComparison.OrdinalIgnoreCase) >= 0 ||
+             url.IndexOf("key-flow-core.base44.app/functions/update", StringComparison.OrdinalIgnoreCase) >= 0 ||
              url.IndexOf("key-flow-core.base44.app/versions", StringComparison.OrdinalIgnoreCase) >= 0);
     }
     private static bool ShouldSkipUpdate(string[] args)
@@ -419,6 +452,23 @@ internal static class Program
 
     private static UpdateInfo FetchLatestUpdate(string endpointUrl)
     {
+        if (endpointUrl.IndexOf("api.github.com/repos/", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            try
+            {
+                return FetchLatestUpdateFromEndpoint(endpointUrl);
+            }
+            catch
+            {
+                return FetchLatestUpdateFromGitHubRepository(DefaultGitHubRepo, DefaultGitHubBranch);
+            }
+        }
+
+        return FetchLatestUpdateFromEndpoint(endpointUrl);
+    }
+
+    private static UpdateInfo FetchLatestUpdateFromEndpoint(string endpointUrl)
+    {
         string raw = DownloadUpdateEndpoint(endpointUrl);
         string trimmed = (raw ?? "").TrimStart('\uFEFF', ' ', '\r', '\n', '\t');
         if (trimmed.StartsWith("<", StringComparison.Ordinal))
@@ -437,12 +487,162 @@ internal static class Program
             throw new InvalidOperationException("Resposta de atualizacao invalida. O endpoint precisa retornar JSON.", ex);
         }
 
+        Dictionary<string, object> release = root as Dictionary<string, object>;
+        if (release != null && endpointUrl.IndexOf("api.github.com/repos/", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            UpdateInfo githubUpdate = UpdateFromGitHubRelease(release);
+            if (githubUpdate != null)
+            {
+                return githubUpdate;
+            }
+        }
+
         List<UpdateInfo> updates = new List<UpdateInfo>();
         CollectUpdateCandidates(root, updates, endpointUrl, serializer);
         return updates
             .Where(item => !string.IsNullOrWhiteSpace(item.Version) && (!string.IsNullOrWhiteSpace(item.ZipUrl) || !string.IsNullOrWhiteSpace(item.SetupUrl)))
             .OrderByDescending(item => VersionSortKey(item.Version), StringComparer.Ordinal)
             .FirstOrDefault();
+    }
+
+    private static UpdateInfo FetchLatestUpdateFromGitHubRepository(string repo, string branch)
+    {
+        string version = DownloadUpdateText(GitHubRawUrl(repo, branch, "VERSION")).Trim();
+        version = Regex.Replace(version, "^[vV]", "");
+        if (string.IsNullOrWhiteSpace(version))
+        {
+            return null;
+        }
+
+        string notes = "";
+        try
+        {
+            notes = DownloadUpdateText(GitHubRawUrl(repo, branch, "CHANGELOG.md"));
+            if (notes.Length > 4000)
+            {
+                notes = notes.Substring(0, 4000);
+            }
+        }
+        catch
+        {
+            notes = "";
+        }
+
+        return new UpdateInfo
+        {
+            Version = version,
+            SetupUrl = GitHubRawUrl(repo, branch, SetupFileName),
+            Notes = notes,
+        };
+    }
+
+    private static string GitHubRawUrl(string repo, string branch, string path)
+    {
+        string slug = NormalizeGitHubRepo(repo);
+        if (string.IsNullOrWhiteSpace(slug))
+        {
+            throw new InvalidOperationException("Repositorio GitHub invalido. Use o formato dono/repositorio.");
+        }
+
+        return "https://raw.githubusercontent.com/" + slug + "/" + Uri.EscapeDataString(branch) + "/" + string.Join("/", path.Split('/').Select(Uri.EscapeDataString));
+    }
+
+    private static string NormalizeGitHubRepo(string value)
+    {
+        value = (value ?? "").Trim().Trim('/');
+        value = Regex.Replace(value, "^https?://github\\.com/", "", RegexOptions.IgnoreCase).Trim('/');
+        value = Regex.Replace(value, "\\.git$", "", RegexOptions.IgnoreCase);
+        string[] parts = value.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2)
+        {
+            return "";
+        }
+        return parts[0] + "/" + parts[1];
+    }
+
+    private static UpdateInfo UpdateFromGitHubRelease(Dictionary<string, object> release)
+    {
+        string version = DictionaryString(release, "tag_name", "name", "version").Trim();
+        version = Regex.Replace(version, "^[vV]", "");
+        object assetsObject;
+        object[] assets = release.TryGetValue("assets", out assetsObject) ? assetsObject as object[] : null;
+        if (string.IsNullOrWhiteSpace(version) || assets == null)
+        {
+            return null;
+        }
+
+        string setupUrl = "";
+        string zipUrl = "";
+        string sha256 = "";
+
+        foreach (object assetObject in assets)
+        {
+            Dictionary<string, object> asset = assetObject as Dictionary<string, object>;
+            if (asset == null)
+            {
+                continue;
+            }
+
+            string name = DictionaryString(asset, "name");
+            string downloadUrl = DictionaryString(asset, "browser_download_url", "download_url", "url");
+            if (string.IsNullOrWhiteSpace(downloadUrl))
+            {
+                continue;
+            }
+
+            string lowerName = name.ToLowerInvariant();
+            string lowerUrl = downloadUrl.ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(setupUrl) && lowerName.EndsWith(".exe", StringComparison.Ordinal) && (lowerName.Contains("setup") || lowerName.Contains("encut")))
+            {
+                setupUrl = downloadUrl;
+                sha256 = Sha256FromGitHubAsset(asset);
+            }
+            else if (string.IsNullOrWhiteSpace(zipUrl) && lowerName.EndsWith(".zip", StringComparison.Ordinal) && lowerName.Contains("encut"))
+            {
+                zipUrl = downloadUrl;
+                if (string.IsNullOrWhiteSpace(sha256))
+                {
+                    sha256 = Sha256FromGitHubAsset(asset);
+                }
+            }
+            else if (string.IsNullOrWhiteSpace(setupUrl) && lowerUrl.EndsWith(".exe", StringComparison.Ordinal))
+            {
+                setupUrl = downloadUrl;
+                sha256 = Sha256FromGitHubAsset(asset);
+            }
+            else if (string.IsNullOrWhiteSpace(zipUrl) && lowerUrl.EndsWith(".zip", StringComparison.Ordinal))
+            {
+                zipUrl = downloadUrl;
+                if (string.IsNullOrWhiteSpace(sha256))
+                {
+                    sha256 = Sha256FromGitHubAsset(asset);
+                }
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(setupUrl) && string.IsNullOrWhiteSpace(zipUrl))
+        {
+            return null;
+        }
+
+        return new UpdateInfo
+        {
+            Version = version,
+            ZipUrl = zipUrl,
+            SetupUrl = setupUrl,
+            Sha256 = sha256,
+            Notes = DictionaryString(release, "body", "notes", "changelog", "description").Trim(),
+        };
+    }
+
+    private static string Sha256FromGitHubAsset(Dictionary<string, object> asset)
+    {
+        string digest = DictionaryString(asset, "digest").Trim();
+        if (digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+        {
+            return digest.Substring("sha256:".Length).Trim().ToLowerInvariant();
+        }
+        return DictionaryString(asset, "sha256", "sha_256", "hash", "checksum").Trim().ToLowerInvariant();
     }
 
     private static string DownloadUpdateEndpoint(string endpointUrl)
@@ -468,6 +668,14 @@ internal static class Program
             {
                 throw firstError;
             }
+        }
+    }
+
+    private static string DownloadUpdateText(string url)
+    {
+        using (WebClient client = CreateUpdateWebClient())
+        {
+            return client.DownloadString(url);
         }
     }
 
@@ -1387,8 +1595,8 @@ internal static class Program
         Console.WriteLine("  EncutSetup.exe /uninstall /delete-all");
         Console.WriteLine();
         Console.WriteLine("Atualizacoes:");
-        Console.WriteLine("  Endpoint padrao: " + DefaultUpdateEndpointUrl);
-        Console.WriteLine("  Download padrao: " + DefaultDownloadUrl);
+        Console.WriteLine("  Repositorio GitHub padrao: " + DefaultGitHubRepo);
+        Console.WriteLine("  Endpoint de release: " + DefaultUpdateEndpointUrl);
         Console.WriteLine("  EncutSetup.exe /skip-update");
     }
     private static void PauseIfInteractive(string[] args)
@@ -1465,10 +1673,3 @@ internal static class Program
         public string ffmpeg_path;
     }
 }
-
-
-
-
-
-
-

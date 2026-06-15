@@ -56,11 +56,15 @@ Arquivos para hospedar:
 - update.json
 - $PackageName
 
-Configure update_config.json no Encut instalado apontando manifest_url para a URL publica do update.json.
+Canal principal recomendado: publique uma release no GitHub com tag v$Version e anexe $PackageName ou EncutSetup.exe.
+
+Fallback por manifesto: configure update_config.json no Encut instalado apontando manifest_url para a URL publica do update.json.
 Exemplo:
 {
   "enabled": true,
   "check_on_startup": true,
+  "github_repo": "",
+  "github_branch": "main",
   "manifest_url": "https://seu-site.com/encut/update.json"
 }
 

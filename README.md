@@ -83,32 +83,38 @@ Tambem e possivel rodar diretamente:
 
 ## Atualizacao automatica
 
-O Encut pode verificar novas versoes em um site. Para isso, hospede os arquivos gerados em `dist_site` e configure `update_config.json`:
+O Encut verifica novas versoes pelo GitHub Releases do repositorio configurado em `update_config.json`:
 
 ```json
 {
   "enabled": true,
   "check_on_startup": true,
-  "manifest_url": "https://seu-site.com/encut/update.json"
+  "github_repo": "SombraLaen/Encut",
+  "github_branch": "main",
+  "manifest_url": "https://api.github.com/repos/SombraLaen/Encut/releases/latest"
 }
 ```
 
-O arquivo `update.json` do site informa a versao mais recente, o pacote `.zip` e o hash SHA256. O campo `zip_url` pode ser relativo ao proprio `update.json` ou uma URL completa.
+Para publicar uma atualizacao, crie uma release no GitHub com a tag da versao, por exemplo `v1.1.36`, e anexe `EncutSetup.exe` ou `Encut_VERSAO.zip` nos assets da release. A ferramenta usa a tag como versao, le as notas da release e baixa automaticamente o asset encontrado.
+
+Se ainda nao houver release, a verificacao usa o proprio repositorio como fallback: le `VERSION` no branch configurado e baixa `EncutSetup.exe` desse mesmo branch.
 
 Na interface, use o botao `Atualizar`. Pela linha de comando:
 
 ```powershell
-python silence_cutter.py --check-update --update-manifest "https://seu-site.com/encut/update.json"
-python silence_cutter.py --install-update --update-manifest "https://seu-site.com/encut/update.json"
+python silence_cutter.py --check-update --github-repo "SombraLaen/Encut" --github-branch main
+python silence_cutter.py --install-update --github-repo "SombraLaen/Encut" --github-branch main
 ```
 
-Para gerar o pacote do site:
+Tambem e possivel usar um manifesto JSON proprio com `--update-manifest`. Nesse caso, o arquivo `update.json` informa a versao mais recente, o pacote `.zip` ou instalador `.exe` e o hash SHA256 opcional.
+
+Para gerar um pacote `.zip` e um manifesto de fallback:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\build_site_package.ps1
 ```
 
-Esse comando cria `dist_site\update.json`, `dist_site\Encut_VERSAO.zip` e `dist_site\Encut_site_upload_VERSAO.zip`.
+Esse comando cria `dist_site\update.json`, `dist_site\Encut_VERSAO.zip` e `dist_site\Encut_site_upload_VERSAO.zip`. O `.zip` tambem pode ser anexado diretamente em uma release do GitHub.
 Na interface, o botao de entrada permite selecionar um ou varios videos. Com varios videos, a saida passa a ser uma pasta, e cada arquivo recebe o sufixo `_sem_silencio`.
 
 Cada opcao da interface tem um icone `?`. Passe o mouse sobre ele para ver exatamente o que aquela opcao faz e como ela afeta os cortes.

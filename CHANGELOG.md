@@ -6,6 +6,13 @@
 
 Ã¯Â»Â¿# Log de alteracoes
 
+## v1.1.36 - 2026-06-15
+- Sistema de atualizacao migrado para GitHub Releases.
+- `update_config.json` agora aponta para o repositorio `SombraLaen/Encut`.
+- Se nao houver release, a verificacao usa `VERSION` e `EncutSetup.exe` do branch configurado.
+- A verificacao continua aceitando manifesto `update.json` como fallback.
+- O instalador tambem consulta o GitHub antes de prosseguir com a instalacao.
+
 ## v1.1.1 - 2026-05-16
 - Versao atualizada para 1.1.1.
 - Mudancas:
