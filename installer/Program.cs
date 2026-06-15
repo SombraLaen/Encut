@@ -96,7 +96,7 @@ internal static class Program
         string installDir = Path.Combine(appDir, "instalacao");
         string runtimeDir = Path.Combine(appDir, "runtime");
         string downloadDir = Path.Combine(runtimeDir, "downloads");
-        string logPath = Path.GetFullPath(GetValueArg(args, "/log") ?? Path.Combine(installDir, "instalador.log"));
+        string logPath = Path.GetFullPath(GetInstallLogPath(args, installDir));
 
         Directory.CreateDirectory(appDir);
         Directory.CreateDirectory(installDir);
@@ -562,6 +562,22 @@ internal static class Program
             HasArg(args, "--skip-update") ||
             HasArg(args, "/no-update") ||
             HasArg(args, "--no-update");
+    }
+
+    private static string GetInstallLogPath(string[] args, string installDir)
+    {
+        string configured = GetValueArg(args, "/log");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        if (ShouldSkipUpdate(args))
+        {
+            return Path.Combine(installDir, "instalador_update_" + SafeFilePart(ReadEmbeddedVersion()) + ".log");
+        }
+
+        return Path.Combine(installDir, "instalador.log");
     }
 
     private static bool TryRunNewerSetupFromSite(string[] args, string appDir, string downloadDir, string setupVersion, InstallerLog log)

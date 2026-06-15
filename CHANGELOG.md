@@ -275,3 +275,8 @@
 - Mudancas detectadas:
   - installer/Program.cs
 
+## v1.1.42 - 2026-06-15T05:30:24
+- Versao atualizada automaticamente de 1.1.41 para 1.1.42.
+- Mudancas detectadas:
+  - installer/Program.cs
+
