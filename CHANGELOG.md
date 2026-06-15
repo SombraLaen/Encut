@@ -6,6 +6,10 @@
 
 Ã¯Â»Â¿# Log de alteracoes
 
+## v1.1.38 - 2026-06-15
+- Corrigida a instalacao local do Python em maquinas onde o instalador oficial ignora o `TargetDir`.
+- O instalador agora limpa instalacoes parciais, passa `DefaultJustForMeTargetDir` e copia o Python encontrado para `runtime\python` quando necessario.
+
 ## v1.1.36 - 2026-06-15
 - Sistema de atualizacao migrado para GitHub Releases.
 - `update_config.json` agora aponta para o repositorio `SombraLaen/Encut`.

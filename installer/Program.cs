@@ -318,6 +318,11 @@ internal static class Program
             log.Write("Python local ja instalado: " + pythonw);
             return;
         }
+        if (Directory.Exists(pythonDir))
+        {
+            log.Write("Removendo instalacao parcial do Python: " + pythonDir);
+            Directory.Delete(pythonDir, true);
+        }
 
         string installerPath = Path.Combine(downloadDir, "python-" + PythonVersion + "-amd64.exe");
         DownloadFile(PythonUrl, installerPath, "Python", log);
@@ -327,6 +332,7 @@ internal static class Program
             "/quiet " +
             "InstallAllUsers=0 " +
             "TargetDir=\"" + pythonDir + "\" " +
+            "DefaultJustForMeTargetDir=\"" + pythonDir + "\" " +
             "Include_tcltk=1 Include_pip=0 Include_test=0 Include_doc=0 " +
             "Include_launcher=0 InstallLauncherAllUsers=0 AssociateFiles=0 Shortcuts=0 PrependPath=0";
 
@@ -339,9 +345,82 @@ internal static class Program
 
         if (!File.Exists(pythonw))
         {
-            throw new FileNotFoundException("Python foi instalado, mas pythonw.exe nao foi encontrado.", pythonw);
+            string installedPythonw = FindInstalledPythonw(pythonDir, log);
+            if (!string.IsNullOrWhiteSpace(installedPythonw))
+            {
+                string installedDir = Path.GetDirectoryName(installedPythonw);
+                log.Write("Python instalado fora da pasta esperada: " + installedDir);
+                log.Write("Copiando Python para: " + pythonDir);
+                if (Directory.Exists(pythonDir))
+                {
+                    Directory.Delete(pythonDir, true);
+                }
+                CopyDirectory(installedDir, pythonDir);
+            }
+        }
+
+        if (!File.Exists(pythonw))
+        {
+            throw new FileNotFoundException(
+                "Python foi instalado, mas pythonw.exe nao foi encontrado em " + pythonDir + ". Verifique o log do instalador e tente executar novamente.",
+                pythonw);
         }
         log.Write("Python instalado em: " + pythonDir);
+    }
+
+    private static string FindInstalledPythonw(string expectedPythonDir, InstallerLog log)
+    {
+        List<string> candidates = new List<string>();
+        AddPythonCandidate(candidates, Path.Combine(expectedPythonDir, "pythonw.exe"));
+        AddPythonCandidate(candidates, Path.Combine(expectedPythonDir, "python.exe"));
+
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+        string programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+        AddPythonCandidate(candidates, Path.Combine(localAppData, "Programs", "Python", "Python312", "pythonw.exe"));
+        AddPythonCandidate(candidates, Path.Combine(programFiles, "Python312", "pythonw.exe"));
+        AddPythonCandidate(candidates, Path.Combine(programFilesX86, "Python312", "pythonw.exe"));
+
+        foreach (string root in new[] {
+            Path.Combine(localAppData, "Programs", "Python"),
+            programFiles,
+            programFilesX86,
+        })
+        {
+            try
+            {
+                if (!Directory.Exists(root))
+                {
+                    continue;
+                }
+                foreach (string found in Directory.GetFiles(root, "pythonw.exe", SearchOption.AllDirectories))
+                {
+                    AddPythonCandidate(candidates, found);
+                }
+            }
+            catch (Exception ex)
+            {
+                log.Write("Busca de Python ignorada em " + root + ": " + ex.Message);
+            }
+        }
+
+        foreach (string candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (File.Exists(candidate) && File.Exists(Path.Combine(Path.GetDirectoryName(candidate), "python.exe")))
+            {
+                return candidate;
+            }
+        }
+        return "";
+    }
+
+    private static void AddPythonCandidate(List<string> candidates, string path)
+    {
+        if (!string.IsNullOrWhiteSpace(path))
+        {
+            candidates.Add(path);
+        }
     }
 
     private static void InstallFfmpeg(string runtimeDir, string downloadDir, InstallerLog log)
