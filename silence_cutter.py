@@ -36,6 +36,7 @@ SILENCE_END_RE = re.compile(r"silence_end:\s*([0-9.]+)")
 TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 DEFAULT_APP_VERSION = "1.1.7"
 PRESETS_FILENAME = "presets_ajustes.json"
+UI_PREFERENCES_FILENAME = "preferencias_ui.json"
 UPDATE_CONFIG_FILENAME = "update_config.json"
 DEFAULT_GITHUB_REPO = "SombraLaen/Encut"
 DEFAULT_GITHUB_BRANCH = "main"
@@ -2499,6 +2500,32 @@ def presets_path() -> Path:
     return app_base_dir() / PRESETS_FILENAME
 
 
+def ui_preferences_path() -> Path:
+    return app_base_dir() / UI_PREFERENCES_FILENAME
+
+
+def load_ui_preferences(path: Optional[Path] = None) -> dict[str, object]:
+    path = path or ui_preferences_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_ui_preferences(preferences: dict[str, object], path: Optional[Path] = None) -> None:
+    path = path or ui_preferences_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "version": 1,
+        "updated_at": _now_iso(),
+        "dark_mode": bool(preferences.get("dark_mode", False)),
+    }
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def default_presets() -> dict[str, dict[str, object]]:
     return {
         "Padrao": {
@@ -2634,6 +2661,7 @@ class SilenceCutterApp:
         self.settings_window: Optional[tk.Toplevel] = None
         self.input_paths: list[Path] = []
         self.presets = load_presets()
+        self.ui_preferences = load_ui_preferences()
 
         ffmpeg_default = default_ffmpeg_path()
         ffmpeg_found = "" if ffmpeg_default == "ffmpeg" else ffmpeg_default
@@ -2649,6 +2677,7 @@ class SilenceCutterApp:
         self.detection_mode_var = tk.StringVar(value="speech")
         self.mode_var = tk.StringVar(value="reencode")
         self.preset_var = tk.StringVar()
+        self.dark_mode_var = tk.BooleanVar(value=bool(self.ui_preferences.get("dark_mode", False)))
         self.status_var = tk.StringVar(value="Selecione um ou mais videos para comecar.")
 
         self._build_ui()
@@ -2656,20 +2685,45 @@ class SilenceCutterApp:
         self.root.after(1200, self._check_updates_on_startup)
 
     def _apply_theme(self) -> None:
-        self.colors = {
-            "bg": "#f4f3ef",
-            "panel": "#ffffff",
-            "panel_alt": "#ece9e2",
-            "text": "#171717",
-            "muted": "#6b655c",
-            "line": "#dad5ca",
-            "accent": "#20201d",
-            "accent_hover": "#35332e",
-            "focus": "#9c7d3e",
-            "log_bg": "#111111",
-            "log_text": "#f1eee7",
-        }
+        if self.dark_mode_var.get():
+            self.colors = {
+                "bg": "#161615",
+                "panel": "#20201d",
+                "panel_alt": "#2b2924",
+                "entry": "#111110",
+                "text": "#f1eee7",
+                "muted": "#b8afa1",
+                "line": "#403c34",
+                "accent": "#d8b665",
+                "accent_text": "#171717",
+                "accent_hover": "#e6c673",
+                "focus": "#d8b665",
+                "button_active": "#363229",
+                "ghost_active": "#26241f",
+                "log_bg": "#0d0d0c",
+                "log_text": "#f4f0e8",
+            }
+        else:
+            self.colors = {
+                "bg": "#f4f3ef",
+                "panel": "#ffffff",
+                "panel_alt": "#ece9e2",
+                "entry": "#fbfaf7",
+                "text": "#171717",
+                "muted": "#6b655c",
+                "line": "#dad5ca",
+                "accent": "#20201d",
+                "accent_text": "#ffffff",
+                "accent_hover": "#35332e",
+                "focus": "#9c7d3e",
+                "button_active": "#dfdbd1",
+                "ghost_active": "#e7e3da",
+                "log_bg": "#111111",
+                "log_text": "#f1eee7",
+            }
         self.root.configure(bg=self.colors["bg"])
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.configure(bg=self.colors["bg"])
         style = ttk.Style(self.root)
         try:
             style.theme_use("clam")
@@ -2685,15 +2739,25 @@ class SilenceCutterApp:
         style.configure("PanelMuted.TLabel", background=self.colors["panel"], foreground=self.colors["muted"])
         style.configure("Section.TLabelframe", background=self.colors["panel"], foreground=self.colors["text"], bordercolor=self.colors["line"])
         style.configure("Section.TLabelframe.Label", background=self.colors["panel"], foreground=self.colors["muted"], font=("Segoe UI", 8, "bold"))
-        style.configure("TEntry", fieldbackground="#fbfaf7", bordercolor=self.colors["line"], lightcolor=self.colors["line"], darkcolor=self.colors["line"], padding=6)
-        style.configure("TCombobox", fieldbackground="#fbfaf7", bordercolor=self.colors["line"], arrowcolor=self.colors["muted"], padding=4)
+        style.configure("TEntry", fieldbackground=self.colors["entry"], foreground=self.colors["text"], bordercolor=self.colors["line"], lightcolor=self.colors["line"], darkcolor=self.colors["line"], insertcolor=self.colors["text"], padding=6)
+        style.configure("TCombobox", fieldbackground=self.colors["entry"], foreground=self.colors["text"], bordercolor=self.colors["line"], arrowcolor=self.colors["muted"], padding=4)
         style.configure("TButton", background=self.colors["panel_alt"], foreground=self.colors["text"], bordercolor=self.colors["line"], focusthickness=1, focuscolor=self.colors["focus"], padding=(12, 6))
-        style.map("TButton", background=[("active", "#dfdbd1")])
-        style.configure("Accent.TButton", background=self.colors["accent"], foreground="#ffffff", bordercolor=self.colors["accent"], padding=(16, 8))
-        style.map("Accent.TButton", background=[("active", self.colors["accent_hover"])], foreground=[("disabled", "#d4d0c8")])
+        style.map("TButton", background=[("active", self.colors["button_active"])], foreground=[("disabled", self.colors["muted"])])
+        style.configure("Accent.TButton", background=self.colors["accent"], foreground=self.colors["accent_text"], bordercolor=self.colors["accent"], padding=(16, 8))
+        style.map("Accent.TButton", background=[("active", self.colors["accent_hover"])], foreground=[("disabled", self.colors["muted"])])
         style.configure("Ghost.TButton", background=self.colors["bg"], foreground=self.colors["text"], bordercolor=self.colors["line"], padding=(10, 6))
-        style.map("Ghost.TButton", background=[("active", "#e7e3da")])
-        style.configure("TRadiobutton", background=self.colors["panel"], foreground=self.colors["text"], indicatorcolor="#fbfaf7")
+        style.map("Ghost.TButton", background=[("active", self.colors["ghost_active"])])
+        style.configure("Icon.TButton", background=self.colors["bg"], foreground=self.colors["text"], bordercolor=self.colors["line"], padding=(8, 5), font=("Segoe UI Symbol", 11))
+        style.map("Icon.TButton", background=[("active", self.colors["ghost_active"])])
+        style.configure("TRadiobutton", background=self.colors["panel"], foreground=self.colors["text"], indicatorcolor=self.colors["entry"])
+        style.configure("TCheckbutton", background=self.colors["bg"], foreground=self.colors["text"], indicatorcolor=self.colors["entry"])
+        style.configure("Panel.TCheckbutton", background=self.colors["panel"], foreground=self.colors["text"], indicatorcolor=self.colors["entry"])
+        if hasattr(self, "log_text"):
+            self.log_text.configure(
+                bg=self.colors["log_bg"],
+                fg=self.colors["log_text"],
+                insertbackground=self.colors["log_text"],
+            )
 
     def _build_ui(self) -> None:
         self._apply_theme()
@@ -2708,7 +2772,9 @@ class SilenceCutterApp:
         toolbar.columnconfigure(1, weight=1)
         ttk.Label(toolbar, text=f"Encut v{APP_VERSION}", font=("Segoe UI Semibold", 11), style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(toolbar, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=12)
-        ttk.Button(toolbar, text="Configuracoes", command=self._open_settings, style="Ghost.TButton").grid(row=0, column=2, sticky="e")
+        settings_button = ttk.Button(toolbar, text="⚙", width=3, command=self._open_settings, style="Icon.TButton")
+        settings_button.grid(row=0, column=2, sticky="e")
+        HoverTip(settings_button, "Abrir configuracoes")
 
         files = ttk.LabelFrame(main, text="Entrada", style="Section.TLabelframe", padding=(14, 12))
         files.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 12))
@@ -2788,30 +2854,45 @@ class SilenceCutterApp:
         panel.grid(row=0, column=0, sticky="nsew")
         panel.columnconfigure(0, weight=1)
 
+        appearance = ttk.LabelFrame(panel, text="Aparencia", style="Section.TLabelframe", padding=(14, 12))
+        appearance.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        ttk.Checkbutton(
+            appearance,
+            text="Dark mode",
+            variable=self.dark_mode_var,
+            command=self._toggle_dark_mode,
+            style="Panel.TCheckbutton",
+        ).pack(anchor="w")
+
         advanced = ttk.LabelFrame(panel, text="Ajustes avancados", style="Section.TLabelframe", padding=(14, 12))
-        advanced.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        advanced.grid(row=1, column=0, sticky="ew", pady=(0, 12))
         advanced.columnconfigure(1, weight=1)
         self._number_field(advanced, 0, "Trecho minimo (s)", self.min_keep_var, HELP_TEXTS["min_keep"])
 
         detection_frame = ttk.LabelFrame(panel, text="Deteccao", style="Section.TLabelframe", padding=(14, 12))
-        detection_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        detection_frame.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         self._radio_with_help(detection_frame, "Fala precisa", self.detection_mode_var, "speech", HELP_TEXTS["detection_speech"], padx=(0, 16))
         self._radio_with_help(detection_frame, "Video Use", self.detection_mode_var, "video_use", HELP_TEXTS["detection_video_use"], padx=(0, 16))
         self._radio_with_help(detection_frame, "Silencio tradicional", self.detection_mode_var, "silence", HELP_TEXTS["detection_silence"], padx=(0, 0))
 
         paths = ttk.LabelFrame(panel, text="Ferramentas e excecoes", style="Section.TLabelframe", padding=(14, 12))
-        paths.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        paths.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         paths.columnconfigure(1, weight=1)
         self._file_row(paths, 0, "ffmpeg.exe", self.ffmpeg_var, self._pick_ffmpeg, HELP_TEXTS["ffmpeg"])
         self._file_row(paths, 1, "Transcript", self.video_use_transcript_var, self._pick_video_use_transcript, HELP_TEXTS["video_use_transcript"])
         self._text_row(paths, 2, "Ignorar cortes", self.ignore_ranges_var, HELP_TEXTS["ignore_ranges"])
 
         update_group = ttk.Frame(panel)
-        update_group.grid(row=3, column=0, sticky="ew")
+        update_group.grid(row=4, column=0, sticky="ew")
         self.update_button = ttk.Button(update_group, text="Verificar atualizacao", command=lambda: self._check_updates(auto=False))
         self.update_button.pack(side="left")
         self._help_icon(update_group, "Verifica no GitHub Releases configurado se existe uma versao nova do Encut. Se houver, baixa o pacote, confere o SHA256 quando informado e executa o instalador automaticamente.").pack(side="left", padx=(4, 0))
         ttk.Button(update_group, text="Fechar", command=self._close_settings, style="Ghost.TButton").pack(side="right")
+
+    def _toggle_dark_mode(self) -> None:
+        self.ui_preferences["dark_mode"] = bool(self.dark_mode_var.get())
+        save_ui_preferences(self.ui_preferences)
+        self._apply_theme()
 
     def _close_settings(self) -> None:
         if self.settings_window is not None and self.settings_window.winfo_exists():
@@ -3248,4 +3329,3 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

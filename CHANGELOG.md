@@ -280,3 +280,8 @@
 - Mudancas detectadas:
   - installer/Program.cs
 
+## v1.1.43 - 2026-06-15T05:42:41
+- Versao atualizada automaticamente de 1.1.42 para 1.1.43.
+- Mudancas detectadas:
+  - silence_cutter.py
+
