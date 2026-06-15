@@ -264,3 +264,9 @@
   - README.md
   - installer/Program.cs
 
+## v1.1.40 - 2026-06-14T23:43:34
+- Versao atualizada automaticamente de 1.1.39 para 1.1.40.
+- Mudancas detectadas:
+  - silence_cutter.py
+  - installer/Program.cs
+
