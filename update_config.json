@@ -1,0 +1,5 @@
+﻿{
+    "enabled":  true,
+    "check_on_startup":  true,
+    "manifest_url":  "https://key-flow-core.base44.app/functions/update"
+}

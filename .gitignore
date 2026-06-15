@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+
+# Local dependency/runtime downloads
+runtime/
+
+# Generated reports, logs, and installer state
+relatorios/
+instalacao/
+*.log
+
+# Generated site/upload packages
+dist_site/
+
+# Local version bookkeeping
+.version_state.json

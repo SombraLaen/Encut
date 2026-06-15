@@ -1,0 +1,27 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>EncutSetup</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\silence_cutter.py" LogicalName="app.silence_cutter.py" />
+    <EmbeddedResource Include="..\README.md" LogicalName="app.README.md" />
+    <EmbeddedResource Include="..\VERSION" LogicalName="app.VERSION" />
+    <EmbeddedResource Include="..\CHANGELOG.md" LogicalName="app.CHANGELOG.md" />
+    <EmbeddedResource Include="..\iniciar.exe" LogicalName="app.iniciar.exe" />
+    <EmbeddedResource Include="..\iniciar.bat" LogicalName="app.iniciar.bat" />
+    <EmbeddedResource Include="..\instalar.bat" LogicalName="app.instalar.bat" />
+    <EmbeddedResource Include="..\desinstalar.bat" LogicalName="app.desinstalar.bat" />
+    <EmbeddedResource Include="..\instalar.ps1" LogicalName="app.instalar.ps1" />
+    <EmbeddedResource Include="..\desinstalar.ps1" LogicalName="app.desinstalar.ps1" />
+    <EmbeddedResource Include="..\presets_ajustes.json" LogicalName="app.presets_ajustes.json" />
+    <EmbeddedResource Include="..\update_config.json" LogicalName="app.update_config.json" />
+    <EmbeddedResource Include="..\build_site_package.ps1" LogicalName="app.build_site_package.ps1" />
+    <EmbeddedResource Include="..\launcher\Iniciar.cs" LogicalName="app.launcher.Iniciar.cs" />
+    <EmbeddedResource Include="..\launcher\Iniciar.csproj" LogicalName="app.launcher.Iniciar.csproj" />
+  </ItemGroup>
+</Project>
+
+
