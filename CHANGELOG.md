@@ -248,3 +248,10 @@
   - silence_cutter.py
   - README.md
 
+## v1.1.37 - 2026-06-14T22:59:56
+- Versao atualizada automaticamente de 1.1.36 para 1.1.37.
+- Mudancas detectadas:
+  - silence_cutter.py
+  - README.md
+  - installer/Program.cs
+
