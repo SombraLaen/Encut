@@ -23,6 +23,8 @@ internal static class Program
     private const string LegacySetupFileName = "CortadorSilencioSetup.exe";
     private const string PythonVersion = "3.12.10";
     private const string PythonUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe";
+    private const string PythonRuntimeZipName = "PythonRuntime-3.12.10-windows-x64.zip";
+    private const string PythonRuntimeZipUrl = "https://github.com/SombraLaen/Encut/releases/latest/download/PythonRuntime-3.12.10-windows-x64.zip";
     private const string FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
     private const string DefaultGitHubRepo = "SombraLaen/Encut";
     private const string DefaultGitHubBranch = "main";
@@ -313,7 +315,7 @@ internal static class Program
     {
         string pythonDir = Path.Combine(runtimeDir, "python");
         string pythonw = Path.Combine(pythonDir, "pythonw.exe");
-        if (File.Exists(pythonw))
+        if (ValidatePythonRuntime(pythonDir, log))
         {
             log.Write("Python local ja instalado: " + pythonw);
             return;
@@ -324,12 +326,71 @@ internal static class Program
             Directory.Delete(pythonDir, true);
         }
 
+        try
+        {
+            InstallPythonFromRuntimeZip(pythonDir, downloadDir, log);
+        }
+        catch (Exception ex)
+        {
+            log.Write("Instalacao pelo runtime ZIP falhou: " + ex.Message);
+            if (Directory.Exists(pythonDir))
+            {
+                Directory.Delete(pythonDir, true);
+            }
+            InstallPythonFromOfficialInstaller(pythonDir, downloadDir, log);
+        }
+
+        if (!ValidatePythonRuntime(pythonDir, log))
+        {
+            throw new FileNotFoundException(
+                "Python foi instalado, mas a validacao falhou em " + pythonDir + ". Verifique se python.exe, pythonw.exe e tkinter existem.",
+                pythonw);
+        }
+        log.Write("Python instalado e validado em: " + pythonDir);
+    }
+
+    private static void InstallPythonFromRuntimeZip(string pythonDir, string downloadDir, InstallerLog log)
+    {
+        string zipPath = Path.Combine(downloadDir, PythonRuntimeZipName);
+        string extractDir = Path.Combine(downloadDir, "python_runtime_extract");
+        DownloadFile(PythonRuntimeZipUrl, zipPath, "Python runtime", log);
+
+        if (Directory.Exists(extractDir))
+        {
+            Directory.Delete(extractDir, true);
+        }
+        Directory.CreateDirectory(extractDir);
+
+        log.Write("Extraindo Python runtime...");
+        ZipFile.ExtractToDirectory(zipPath, extractDir);
+
+        string extractedPythonw = Directory.GetFiles(extractDir, "pythonw.exe", SearchOption.AllDirectories).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(extractedPythonw))
+        {
+            throw new FileNotFoundException("Pacote Python runtime nao contem pythonw.exe.");
+        }
+
+        string sourceDir = Path.GetDirectoryName(extractedPythonw);
+        if (Directory.Exists(pythonDir))
+        {
+            Directory.Delete(pythonDir, true);
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(pythonDir));
+        CopyDirectory(sourceDir, pythonDir);
+        Directory.Delete(extractDir, true);
+    }
+
+    private static void InstallPythonFromOfficialInstaller(string pythonDir, string downloadDir, InstallerLog log)
+    {
+        string pythonw = Path.Combine(pythonDir, "pythonw.exe");
         string installerPath = Path.Combine(downloadDir, "python-" + PythonVersion + "-amd64.exe");
+        string installerLogPath = Path.Combine(downloadDir, "python-installer.log");
         DownloadFile(PythonUrl, installerPath, "Python", log);
 
         Directory.CreateDirectory(pythonDir);
         string arguments =
             "/quiet " +
+            "/log \"" + installerLogPath + "\" " +
             "InstallAllUsers=0 " +
             "TargetDir=\"" + pythonDir + "\" " +
             "DefaultJustForMeTargetDir=\"" + pythonDir + "\" " +
@@ -337,6 +398,7 @@ internal static class Program
             "Include_launcher=0 InstallLauncherAllUsers=0 AssociateFiles=0 Shortcuts=0 PrependPath=0";
 
         log.Write("Instalando Python local...");
+        log.Write("Log do instalador Python: " + installerLogPath);
         int exitCode = RunProcess(installerPath, arguments, log);
         if (exitCode != 0)
         {
@@ -358,14 +420,27 @@ internal static class Program
                 CopyDirectory(installedDir, pythonDir);
             }
         }
+    }
 
-        if (!File.Exists(pythonw))
+    private static bool ValidatePythonRuntime(string pythonDir, InstallerLog log)
+    {
+        string python = Path.Combine(pythonDir, "python.exe");
+        string pythonw = Path.Combine(pythonDir, "pythonw.exe");
+        if (!File.Exists(python) || !File.Exists(pythonw))
         {
-            throw new FileNotFoundException(
-                "Python foi instalado, mas pythonw.exe nao foi encontrado em " + pythonDir + ". Verifique o log do instalador e tente executar novamente.",
-                pythonw);
+            return false;
         }
-        log.Write("Python instalado em: " + pythonDir);
+
+        int exitCode = RunProcess(
+            python,
+            "-c \"import sys, tkinter; print(sys.version.split()[0]); print('tkinter ok')\"",
+            log);
+        if (exitCode != 0)
+        {
+            log.Write("Validacao do Python falhou com codigo " + exitCode + ".");
+            return false;
+        }
+        return true;
     }
 
     private static string FindInstalledPythonw(string expectedPythonDir, InstallerLog log)
@@ -384,8 +459,8 @@ internal static class Program
 
         foreach (string root in new[] {
             Path.Combine(localAppData, "Programs", "Python"),
-            programFiles,
-            programFilesX86,
+            Path.Combine(programFiles, "Python312"),
+            Path.Combine(programFilesX86, "Python312"),
         })
         {
             try

@@ -11,6 +11,7 @@ instalacao/
 
 # Generated site/upload packages
 dist_site/
+PythonRuntime-*.zip
 
 # Local version bookkeeping
 .version_state.json

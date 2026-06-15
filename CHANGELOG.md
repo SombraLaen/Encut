@@ -6,6 +6,11 @@
 
 Ã¯Â»Â¿# Log de alteracoes
 
+## v1.1.39 - 2026-06-15
+- Instalador passa a baixar um runtime Python portatil completo pela release do GitHub.
+- A instalacao valida `python.exe`, `pythonw.exe` e `tkinter` antes de prosseguir.
+- O instalador oficial da Python.org ficou apenas como fallback, com log proprio e sem varredura ampla em `Program Files`.
+
 ## v1.1.38 - 2026-06-15
 - Corrigida a instalacao local do Python em maquinas onde o instalador oficial ignora o `TargetDir`.
 - O instalador agora limpa instalacoes parciais, passa `DefaultJustForMeTargetDir` e copia o Python encontrado para `runtime\python` quando necessario.
