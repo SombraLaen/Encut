@@ -2625,11 +2625,13 @@ class SilenceCutterApp:
 
         self.root = tk.Tk()
         self.root.title(f"Encut v{APP_VERSION}")
-        self.root.geometry("820x620")
-        self.root.minsize(760, 560)
+        self.root.geometry("880x640")
+        self.root.minsize(800, 580)
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker: Optional[threading.Thread] = None
         self.update_worker: Optional[threading.Thread] = None
+        self.update_button: Optional[ttk.Button] = None
+        self.settings_window: Optional[tk.Toplevel] = None
         self.input_paths: list[Path] = []
         self.presets = load_presets()
 
@@ -2653,46 +2655,83 @@ class SilenceCutterApp:
         self.root.after(100, self._drain_events)
         self.root.after(1200, self._check_updates_on_startup)
 
+    def _apply_theme(self) -> None:
+        self.colors = {
+            "bg": "#f4f3ef",
+            "panel": "#ffffff",
+            "panel_alt": "#ece9e2",
+            "text": "#171717",
+            "muted": "#6b655c",
+            "line": "#dad5ca",
+            "accent": "#20201d",
+            "accent_hover": "#35332e",
+            "focus": "#9c7d3e",
+            "log_bg": "#111111",
+            "log_text": "#f1eee7",
+        }
+        self.root.configure(bg=self.colors["bg"])
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(".", font=("Segoe UI", 9), background=self.colors["bg"], foreground=self.colors["text"])
+        style.configure("TFrame", background=self.colors["bg"])
+        style.configure("Panel.TFrame", background=self.colors["panel"], relief="solid", borderwidth=1)
+        style.configure("Toolbar.TFrame", background=self.colors["bg"])
+        style.configure("TLabel", background=self.colors["bg"], foreground=self.colors["text"])
+        style.configure("Muted.TLabel", background=self.colors["bg"], foreground=self.colors["muted"])
+        style.configure("Panel.TLabel", background=self.colors["panel"], foreground=self.colors["text"])
+        style.configure("PanelMuted.TLabel", background=self.colors["panel"], foreground=self.colors["muted"])
+        style.configure("Section.TLabelframe", background=self.colors["panel"], foreground=self.colors["text"], bordercolor=self.colors["line"])
+        style.configure("Section.TLabelframe.Label", background=self.colors["panel"], foreground=self.colors["muted"], font=("Segoe UI", 8, "bold"))
+        style.configure("TEntry", fieldbackground="#fbfaf7", bordercolor=self.colors["line"], lightcolor=self.colors["line"], darkcolor=self.colors["line"], padding=6)
+        style.configure("TCombobox", fieldbackground="#fbfaf7", bordercolor=self.colors["line"], arrowcolor=self.colors["muted"], padding=4)
+        style.configure("TButton", background=self.colors["panel_alt"], foreground=self.colors["text"], bordercolor=self.colors["line"], focusthickness=1, focuscolor=self.colors["focus"], padding=(12, 6))
+        style.map("TButton", background=[("active", "#dfdbd1")])
+        style.configure("Accent.TButton", background=self.colors["accent"], foreground="#ffffff", bordercolor=self.colors["accent"], padding=(16, 8))
+        style.map("Accent.TButton", background=[("active", self.colors["accent_hover"])], foreground=[("disabled", "#d4d0c8")])
+        style.configure("Ghost.TButton", background=self.colors["bg"], foreground=self.colors["text"], bordercolor=self.colors["line"], padding=(10, 6))
+        style.map("Ghost.TButton", background=[("active", "#e7e3da")])
+        style.configure("TRadiobutton", background=self.colors["panel"], foreground=self.colors["text"], indicatorcolor="#fbfaf7")
+
     def _build_ui(self) -> None:
-        main = ttk.Frame(self.root, padding=18)
+        self._apply_theme()
+
+        main = ttk.Frame(self.root, padding=(22, 18, 22, 18))
         main.pack(fill="both", expand=True)
         main.columnconfigure(1, weight=1)
-        main.rowconfigure(12, weight=1)
+        main.rowconfigure(6, weight=1)
 
-        title = ttk.Label(main, text="Encut - cortes de silencio para videos grandes", font=("Segoe UI", 16, "bold"))
-        title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 14))
+        toolbar = ttk.Frame(main, style="Toolbar.TFrame")
+        toolbar.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 14))
+        toolbar.columnconfigure(1, weight=1)
+        ttk.Label(toolbar, text=f"Encut v{APP_VERSION}", font=("Segoe UI Semibold", 11), style="Muted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(toolbar, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=12)
+        ttk.Button(toolbar, text="Configuracoes", command=self._open_settings, style="Ghost.TButton").grid(row=0, column=2, sticky="e")
 
-        self._file_row(main, 1, "Videos", self.input_var, self._pick_input, HELP_TEXTS["videos"])
-        self._file_row(main, 2, "Saida / pasta", self.output_var, self._pick_output, HELP_TEXTS["output"])
-        self._file_row(main, 3, "ffmpeg.exe", self.ffmpeg_var, self._pick_ffmpeg, HELP_TEXTS["ffmpeg"])
-        self._file_row(main, 4, "Transcript Video Use", self.video_use_transcript_var, self._pick_video_use_transcript, HELP_TEXTS["video_use_transcript"])
-        self._text_row(main, 5, "Ignorar cortes", self.ignore_ranges_var, HELP_TEXTS["ignore_ranges"])
+        files = ttk.LabelFrame(main, text="Entrada", style="Section.TLabelframe", padding=(14, 12))
+        files.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+        files.columnconfigure(1, weight=1)
+        self._file_row(files, 0, "Videos", self.input_var, self._pick_input, HELP_TEXTS["videos"])
+        self._file_row(files, 1, "Saida", self.output_var, self._pick_output, HELP_TEXTS["output"])
 
-        settings = ttk.LabelFrame(main, text="Ajustes")
-        settings.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(14, 10))
-        for col in range(4):
-            settings.columnconfigure(col, weight=1)
+        quick_settings = ttk.LabelFrame(main, text="Corte", style="Section.TLabelframe", padding=(14, 12))
+        quick_settings.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+        for col in range(3):
+            quick_settings.columnconfigure(col, weight=1)
 
-        self._number_field(settings, 0, "Silencio abaixo de (dB)", self.threshold_var, HELP_TEXTS["threshold"])
-        self._number_field(settings, 1, "Silencio minimo (s)", self.min_silence_var, HELP_TEXTS["min_silence"])
-        self._number_field(settings, 2, "Margem antes/depois (s)", self.padding_var, HELP_TEXTS["padding"])
-        self._number_field(settings, 3, "Trecho minimo (s)", self.min_keep_var, HELP_TEXTS["min_keep"])
+        self._number_field(quick_settings, 0, "Silencio abaixo de (dB)", self.threshold_var, HELP_TEXTS["threshold"])
+        self._number_field(quick_settings, 1, "Silencio minimo (s)", self.min_silence_var, HELP_TEXTS["min_silence"])
+        self._number_field(quick_settings, 2, "Margem (s)", self.padding_var, HELP_TEXTS["padding"])
 
-        detection_frame = ttk.Frame(main)
-        detection_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(4, 8))
-        self._label_with_help(detection_frame, "Deteccao", HELP_TEXTS["detection"]).pack(side="left")
-        self._radio_with_help(detection_frame, "Fala precisa", self.detection_mode_var, "speech", HELP_TEXTS["detection_speech"], padx=(16, 0))
-        self._radio_with_help(detection_frame, "Video Use", self.detection_mode_var, "video_use", HELP_TEXTS["detection_video_use"], padx=(16, 0))
-        self._radio_with_help(detection_frame, "Silencio tradicional", self.detection_mode_var, "silence", HELP_TEXTS["detection_silence"], padx=(16, 0))
-
-        mode_frame = ttk.Frame(main)
-        mode_frame.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(4, 10))
-        self._label_with_help(mode_frame, "Modo", HELP_TEXTS["mode"]).pack(side="left")
-        self._radio_with_help(mode_frame, "Preciso (re-encode)", self.mode_var, "reencode", HELP_TEXTS["mode_reencode"], padx=(16, 0))
-        self._radio_with_help(mode_frame, "Rapido (sem re-encode)", self.mode_var, "copy", HELP_TEXTS["mode_copy"], padx=(16, 0))
+        mode_frame = ttk.LabelFrame(main, text="Exportacao", style="Section.TLabelframe", padding=(14, 12))
+        mode_frame.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+        self._radio_with_help(mode_frame, "Preciso", self.mode_var, "reencode", HELP_TEXTS["mode_reencode"], padx=(0, 18))
+        self._radio_with_help(mode_frame, "Rapido", self.mode_var, "copy", HELP_TEXTS["mode_copy"], padx=(0, 0))
 
         presets_frame = ttk.Frame(main)
-        presets_frame.grid(row=9, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        presets_frame.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(0, 12))
         presets_frame.columnconfigure(1, weight=1)
         self._label_with_help(presets_frame, "Preset", HELP_TEXTS["presets"]).grid(row=0, column=0, sticky="w")
         self.preset_combo = ttk.Combobox(presets_frame, textvariable=self.preset_var, state="readonly", width=28)
@@ -2703,10 +2742,10 @@ class SilenceCutterApp:
         self._refresh_preset_combo()
 
         actions = ttk.Frame(main)
-        actions.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(2, 12))
+        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 12))
         start_group = ttk.Frame(actions)
         start_group.pack(side="left")
-        self.start_button = ttk.Button(start_group, text="Cortar silencio", command=self._start)
+        self.start_button = ttk.Button(start_group, text="Cortar silencio", command=self._start, style="Accent.TButton")
         self.start_button.pack(side="left")
         self._help_icon(start_group, HELP_TEXTS["start"]).pack(side="left", padx=(4, 0))
 
@@ -2715,17 +2754,74 @@ class SilenceCutterApp:
         ttk.Button(clear_group, text="Limpar log", command=self._clear_log).pack(side="left")
         self._help_icon(clear_group, HELP_TEXTS["clear_log"]).pack(side="left", padx=(4, 0))
 
-        update_group = ttk.Frame(actions)
-        update_group.pack(side="left")
-        self.update_button = ttk.Button(update_group, text="Atualizar", command=lambda: self._check_updates(auto=False))
+        self.log_text = tk.Text(main, height=12, wrap="word")
+        self.log_text.grid(row=6, column=0, columnspan=3, sticky="nsew")
+        self.log_text.configure(
+            state="disabled",
+            bg=self.colors["log_bg"],
+            fg=self.colors["log_text"],
+            insertbackground=self.colors["log_text"],
+            relief="flat",
+            padx=12,
+            pady=10,
+            font=("Consolas", 9),
+        )
+
+    def _open_settings(self) -> None:
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.lift()
+            self.settings_window.focus_force()
+            return
+
+        window = tk.Toplevel(self.root)
+        self.settings_window = window
+        window.title("Configuracoes")
+        window.configure(bg=self.colors["bg"])
+        window.geometry("620x430")
+        window.minsize(560, 380)
+        window.transient(self.root)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+        window.protocol("WM_DELETE_WINDOW", self._close_settings)
+
+        panel = ttk.Frame(window, padding=(18, 16, 18, 16))
+        panel.grid(row=0, column=0, sticky="nsew")
+        panel.columnconfigure(0, weight=1)
+
+        advanced = ttk.LabelFrame(panel, text="Ajustes avancados", style="Section.TLabelframe", padding=(14, 12))
+        advanced.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        advanced.columnconfigure(1, weight=1)
+        self._number_field(advanced, 0, "Trecho minimo (s)", self.min_keep_var, HELP_TEXTS["min_keep"])
+
+        detection_frame = ttk.LabelFrame(panel, text="Deteccao", style="Section.TLabelframe", padding=(14, 12))
+        detection_frame.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self._radio_with_help(detection_frame, "Fala precisa", self.detection_mode_var, "speech", HELP_TEXTS["detection_speech"], padx=(0, 16))
+        self._radio_with_help(detection_frame, "Video Use", self.detection_mode_var, "video_use", HELP_TEXTS["detection_video_use"], padx=(0, 16))
+        self._radio_with_help(detection_frame, "Silencio tradicional", self.detection_mode_var, "silence", HELP_TEXTS["detection_silence"], padx=(0, 0))
+
+        paths = ttk.LabelFrame(panel, text="Ferramentas e excecoes", style="Section.TLabelframe", padding=(14, 12))
+        paths.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        paths.columnconfigure(1, weight=1)
+        self._file_row(paths, 0, "ffmpeg.exe", self.ffmpeg_var, self._pick_ffmpeg, HELP_TEXTS["ffmpeg"])
+        self._file_row(paths, 1, "Transcript", self.video_use_transcript_var, self._pick_video_use_transcript, HELP_TEXTS["video_use_transcript"])
+        self._text_row(paths, 2, "Ignorar cortes", self.ignore_ranges_var, HELP_TEXTS["ignore_ranges"])
+
+        update_group = ttk.Frame(panel)
+        update_group.grid(row=3, column=0, sticky="ew")
+        self.update_button = ttk.Button(update_group, text="Verificar atualizacao", command=lambda: self._check_updates(auto=False))
         self.update_button.pack(side="left")
         self._help_icon(update_group, "Verifica no GitHub Releases configurado se existe uma versao nova do Encut. Se houver, baixa o pacote, confere o SHA256 quando informado e executa o instalador automaticamente.").pack(side="left", padx=(4, 0))
+        ttk.Button(update_group, text="Fechar", command=self._close_settings, style="Ghost.TButton").pack(side="right")
 
-        ttk.Label(main, textvariable=self.status_var).grid(row=11, column=0, columnspan=3, sticky="w")
+    def _close_settings(self) -> None:
+        if self.settings_window is not None and self.settings_window.winfo_exists():
+            self.settings_window.destroy()
+        self.settings_window = None
+        self.update_button = None
 
-        self.log_text = tk.Text(main, height=12, wrap="word")
-        self.log_text.grid(row=12, column=0, columnspan=3, sticky="nsew", pady=(8, 0))
-        self.log_text.configure(state="disabled")
+    def _set_update_button_state(self, state: str) -> None:
+        if self.update_button is not None and self.update_button.winfo_exists():
+            self.update_button.configure(state=state)
 
     def _file_row(self, parent: ttk.Frame, row: int, label: str, var: tk.StringVar, command: Callable[[], None], help_text: str) -> None:
         self._label_with_help(parent, label, help_text).grid(row=row, column=0, sticky="w", pady=4)
@@ -2902,7 +2998,7 @@ class SilenceCutterApp:
         if self.update_worker and self.update_worker.is_alive():
             return
         if not auto:
-            self.update_button.configure(state="disabled")
+            self._set_update_button_state("disabled")
             self.status_var.set("Verificando atualizacao...")
             self._append_log("Verificando atualizacao do Encut...")
         self.update_worker = threading.Thread(target=self._run_update_check, args=(auto,), daemon=True)
@@ -2931,7 +3027,7 @@ class SilenceCutterApp:
                 self.events.put(("update_error", str(exc)))
 
     def _start_update_install(self, update: UpdateInfo) -> None:
-        self.update_button.configure(state="disabled")
+        self._set_update_button_state("disabled")
         self.status_var.set(f"Atualizando para v{update.version}...")
         self._append_log(f"Atualizando Encut para v{update.version}...")
         self.update_worker = threading.Thread(target=self._run_update_install, args=(update,), daemon=True)
@@ -3026,17 +3122,17 @@ class SilenceCutterApp:
                 self._append_log(f"Lote concluido: {text}")
                 messagebox.showinfo("Lote concluido", str(text))
             elif kind == "update_status":
-                self.update_button.configure(state="normal")
+                self._set_update_button_state("normal")
                 self.status_var.set(str(text))
                 self._append_log(str(text))
                 messagebox.showinfo("Atualizacao", str(text))
             elif kind == "update_error":
-                self.update_button.configure(state="normal")
+                self._set_update_button_state("normal")
                 self.status_var.set("Erro na atualizacao.")
                 self._append_log(f"ERRO NA ATUALIZACAO: {text}")
                 messagebox.showerror("Atualizacao", str(text))
             elif kind == "update_available":
-                self.update_button.configure(state="normal")
+                self._set_update_button_state("normal")
                 update = text
                 details = f"Existe uma nova versao do Encut: v{update.version}.\n\nVersao atual: v{APP_VERSION}"
                 if update.notes:
@@ -3046,7 +3142,7 @@ class SilenceCutterApp:
                 if messagebox.askyesno("Atualizacao disponivel", details):
                     self._start_update_install(update)
             elif kind == "update_done":
-                self.update_button.configure(state="normal")
+                self._set_update_button_state("normal")
                 self.status_var.set("Atualizacao instalada.")
                 self._append_log(f"Atualizacao instalada: v{text}")
                 messagebox.showinfo("Atualizacao instalada", f"Encut v{text} foi instalado. Feche e abra o aplicativo para usar a nova versao.")
@@ -3152,6 +3248,4 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
 
