@@ -270,3 +270,8 @@
   - silence_cutter.py
   - installer/Program.cs
 
+## v1.1.41 - 2026-06-14T23:56:44
+- Versao atualizada automaticamente de 1.1.40 para 1.1.41.
+- Mudancas detectadas:
+  - installer/Program.cs
+

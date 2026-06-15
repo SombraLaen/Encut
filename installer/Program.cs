@@ -24,7 +24,7 @@ internal static class Program
     private const string PythonVersion = "3.12.10";
     private const string PythonUrl = "https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe";
     private const string PythonRuntimeZipName = "PythonRuntime-3.12.10-windows-x64.zip";
-    private const string PythonRuntimeZipUrl = "https://github.com/SombraLaen/Encut/releases/latest/download/PythonRuntime-3.12.10-windows-x64.zip";
+    private const string PythonRuntimeZipUrl = "https://github.com/SombraLaen/Encut/releases/download/v1.1.39/PythonRuntime-3.12.10-windows-x64.zip";
     private const string FfmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
     private const string DefaultGitHubRepo = "SombraLaen/Encut";
     private const string DefaultGitHubBranch = "main";
@@ -96,7 +96,7 @@ internal static class Program
         string installDir = Path.Combine(appDir, "instalacao");
         string runtimeDir = Path.Combine(appDir, "runtime");
         string downloadDir = Path.Combine(runtimeDir, "downloads");
-        string logPath = Path.Combine(installDir, "instalador.log");
+        string logPath = Path.GetFullPath(GetValueArg(args, "/log") ?? Path.Combine(installDir, "instalador.log"));
 
         Directory.CreateDirectory(appDir);
         Directory.CreateDirectory(installDir);
@@ -585,7 +585,7 @@ internal static class Program
             log.Write("Atualizacao encontrada no endpoint: v" + update.Version + " (local v" + setupVersion + ").");
             Console.WriteLine("Nova versao encontrada: v" + update.Version + ". Baixando setup atualizado...");
             string setupPath = DownloadUpdateSetup(update, downloadDir, log);
-            string relaunchArgs = BuildRelaunchArguments(args, appDir);
+            string relaunchArgs = BuildRelaunchArguments(args, appDir, update.Version);
             log.Write("Executando setup atualizado: " + setupPath + " " + relaunchArgs);
             int exitCode = RunProcess(setupPath, relaunchArgs, log);
             if (exitCode == 0)
@@ -1099,11 +1099,12 @@ internal static class Program
         return parts[0].ToString("D6") + "." + parts[1].ToString("D6") + "." + parts[2].ToString("D6") + "." + parts[3].ToString("D6");
     }
 
-    private static string BuildRelaunchArguments(string[] args, string appDir)
+    private static string BuildRelaunchArguments(string[] args, string appDir, string updateVersion)
     {
         List<string> forwarded = new List<string>();
         bool hasDir = false;
         bool hasSilent = false;
+        bool hasLog = false;
         foreach (string arg in args)
         {
             if (string.Equals(arg, "/skip-update", StringComparison.OrdinalIgnoreCase) ||
@@ -1116,6 +1117,10 @@ internal static class Program
             if (arg.StartsWith("/dir=", StringComparison.OrdinalIgnoreCase))
             {
                 hasDir = true;
+            }
+            if (arg.StartsWith("/log=", StringComparison.OrdinalIgnoreCase))
+            {
+                hasLog = true;
             }
             if (string.Equals(arg, "/silent", StringComparison.OrdinalIgnoreCase) || string.Equals(arg, "--silent", StringComparison.OrdinalIgnoreCase))
             {
@@ -1130,6 +1135,11 @@ internal static class Program
         if (!hasSilent)
         {
             forwarded.Add("/silent");
+        }
+        if (!hasLog)
+        {
+            string logPath = Path.Combine(appDir, "instalacao", "instalador_update_" + SafeFilePart(updateVersion) + ".log");
+            forwarded.Add(QuoteArg("/log=" + logPath));
         }
         forwarded.Add("/skip-update");
         return string.Join(" ", forwarded.ToArray());
