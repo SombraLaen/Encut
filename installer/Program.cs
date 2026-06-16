@@ -92,7 +92,7 @@ internal static class Program
 
     private static int RunInstall(string[] args)
     {
-        string appDir = Path.GetFullPath(GetValueArg(args, "/dir") ?? GetDefaultInstallDir());
+        string appDir = Path.GetFullPath(GetInstallDir(args));
         string installDir = Path.Combine(appDir, "instalacao");
         string runtimeDir = Path.Combine(appDir, "runtime");
         string downloadDir = Path.Combine(runtimeDir, "downloads");
@@ -456,29 +456,9 @@ internal static class Program
         AddPythonCandidate(candidates, Path.Combine(localAppData, "Programs", "Python", "Python312", "pythonw.exe"));
         AddPythonCandidate(candidates, Path.Combine(programFiles, "Python312", "pythonw.exe"));
         AddPythonCandidate(candidates, Path.Combine(programFilesX86, "Python312", "pythonw.exe"));
-
-        foreach (string root in new[] {
-            Path.Combine(localAppData, "Programs", "Python"),
-            Path.Combine(programFiles, "Python312"),
-            Path.Combine(programFilesX86, "Python312"),
-        })
-        {
-            try
-            {
-                if (!Directory.Exists(root))
-                {
-                    continue;
-                }
-                foreach (string found in Directory.GetFiles(root, "pythonw.exe", SearchOption.AllDirectories))
-                {
-                    AddPythonCandidate(candidates, found);
-                }
-            }
-            catch (Exception ex)
-            {
-                log.Write("Busca de Python ignorada em " + root + ": " + ex.Message);
-            }
-        }
+        AddPythonInstallRootCandidates(candidates, Path.Combine(localAppData, "Programs", "Python"), log);
+        AddPythonInstallRootCandidates(candidates, programFiles, log);
+        AddPythonInstallRootCandidates(candidates, programFilesX86, log);
 
         foreach (string candidate in candidates.Distinct(StringComparer.OrdinalIgnoreCase))
         {
@@ -495,6 +475,26 @@ internal static class Program
         if (!string.IsNullOrWhiteSpace(path))
         {
             candidates.Add(path);
+        }
+    }
+
+    private static void AddPythonInstallRootCandidates(List<string> candidates, string root, InstallerLog log)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
+            {
+                return;
+            }
+
+            foreach (string dir in Directory.GetDirectories(root, "Python3*", SearchOption.TopDirectoryOnly))
+            {
+                AddPythonCandidate(candidates, Path.Combine(dir, "pythonw.exe"));
+            }
+        }
+        catch (Exception ex)
+        {
+            log.Write("Busca direta de Python ignorada em " + root + ": " + ex.Message);
         }
     }
 
@@ -1002,6 +1002,7 @@ internal static class Program
     private static string DownloadUpdateSetup(UpdateInfo update, string downloadDir, InstallerLog log)
     {
         Directory.CreateDirectory(downloadDir);
+        CleanUpdateExtractFolders(downloadDir, log);
         string safeVersion = SafeFilePart(update.Version);
         if (!string.IsNullOrWhiteSpace(update.SetupUrl))
         {
@@ -1026,7 +1027,31 @@ internal static class Program
         {
             throw new FileNotFoundException("Pacote de atualizacao nao contem " + SetupFileName + ".");
         }
-        return extractedSetupPath;
+        string stableSetupPath = Path.Combine(downloadDir, "EncutSetup_" + safeVersion + ".exe");
+        File.Copy(extractedSetupPath, stableSetupPath, true);
+        CleanUpdateExtractFolders(downloadDir, log);
+        return stableSetupPath;
+    }
+
+    private static void CleanUpdateExtractFolders(string downloadDir, InstallerLog log)
+    {
+        if (string.IsNullOrWhiteSpace(downloadDir) || !Directory.Exists(downloadDir))
+        {
+            return;
+        }
+
+        foreach (string dir in Directory.GetDirectories(downloadDir, "update_*", SearchOption.TopDirectoryOnly))
+        {
+            try
+            {
+                Directory.Delete(dir, true);
+                log.Write("Pasta temporaria de update removida: " + dir);
+            }
+            catch (Exception ex)
+            {
+                log.Write("Nao foi possivel remover pasta temporaria de update " + dir + ": " + ex.Message);
+            }
+        }
     }
 
     private static void DownloadFileFresh(string url, string destination, string label, InstallerLog log)
@@ -1533,13 +1558,10 @@ internal static class Program
             return currentDir;
         }
 
-        using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + AppId))
+        string registered = GetRegisteredInstallDir();
+        if (!string.IsNullOrWhiteSpace(registered))
         {
-            string installLocation = key == null ? null : key.GetValue("InstallLocation") as string;
-            if (!string.IsNullOrWhiteSpace(installLocation))
-            {
-                return installLocation;
-            }
+            return registered;
         }
 
         return GetDefaultInstallDir();
@@ -1621,6 +1643,47 @@ internal static class Program
         return Path.Combine(desktop, "Encut");
     }
 
+    private static string GetInstallDir(string[] args)
+    {
+        string configured = GetValueArg(args, "/dir");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return configured;
+        }
+
+        string currentDir = AppDomain.CurrentDomain.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.Equals(Path.GetFileName(currentDir), "instalacao", StringComparison.OrdinalIgnoreCase))
+        {
+            DirectoryInfo parent = Directory.GetParent(currentDir);
+            if (parent != null && File.Exists(Path.Combine(parent.FullName, "silence_cutter.py")))
+            {
+                return parent.FullName;
+            }
+        }
+
+        if (File.Exists(Path.Combine(currentDir, "silence_cutter.py")))
+        {
+            return currentDir;
+        }
+
+        string registered = GetRegisteredInstallDir();
+        if (!string.IsNullOrWhiteSpace(registered))
+        {
+            return registered;
+        }
+
+        return GetDefaultInstallDir();
+    }
+
+    private static string GetRegisteredInstallDir()
+    {
+        using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\" + AppId))
+        {
+            string installLocation = key == null ? null : key.GetValue("InstallLocation") as string;
+            return string.IsNullOrWhiteSpace(installLocation) ? null : installLocation;
+        }
+    }
+
     private static string ReadVersion(string appDir)
     {
         string path = Path.Combine(appDir, "VERSION");
@@ -1670,14 +1733,17 @@ internal static class Program
     }
     private static void CopyDirectory(string source, string destination)
     {
+        string sourceRoot = Path.GetFullPath(source).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         Directory.CreateDirectory(destination);
-        foreach (string dir in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
+        foreach (string dir in Directory.GetDirectories(sourceRoot, "*", SearchOption.AllDirectories))
         {
-            Directory.CreateDirectory(dir.Replace(source, destination));
+            string relative = dir.Substring(sourceRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            Directory.CreateDirectory(Path.Combine(destination, relative));
         }
-        foreach (string file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        foreach (string file in Directory.GetFiles(sourceRoot, "*", SearchOption.AllDirectories))
         {
-            string target = file.Replace(source, destination);
+            string relative = file.Substring(sourceRoot.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string target = Path.Combine(destination, relative);
             Directory.CreateDirectory(Path.GetDirectoryName(target));
             File.Copy(file, target, true);
         }

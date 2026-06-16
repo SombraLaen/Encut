@@ -15,3 +15,7 @@ PythonRuntime-*.zip
 
 # Local version bookkeeping
 .version_state.json
+
+# Local Codex skill workspace
+.agents/
+skills-lock.json

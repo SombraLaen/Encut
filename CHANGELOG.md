@@ -1,10 +1,11 @@
 # Log de alteracoes
 
-﻿# Log de alteracoes
-
-ï»¿# Log de alteracoes
-
-Ã¯Â»Â¿# Log de alteracoes
+## v1.1.44 - 2026-06-16
+- Corrigida a atualizacao iniciada pelo Encut para instalar sempre na pasta atual do aplicativo.
+- O instalador agora reutiliza a instalacao registrada ou atual antes de cair no destino padrao.
+- Pastas temporarias `runtime\downloads\update_*` passam a ser removidas depois da extracao do setup.
+- A verificacao de update tambem consulta o branch configurado quando a release do GitHub ainda nao tem versao mais nova.
+- Organizados artefatos locais do Codex no `.gitignore` e removida duplicidade de resolucao da pasta base.
 
 ## v1.1.39 - 2026-06-15
 - Instalador passa a baixar um runtime Python portatil completo pela release do GitHub.

@@ -95,9 +95,9 @@ O Encut verifica novas versoes pelo GitHub Releases do repositorio configurado e
 }
 ```
 
-Para publicar uma atualizacao, crie uma release no GitHub com a tag da versao, por exemplo `v1.1.36`, e anexe `EncutSetup.exe` ou `Encut_VERSAO.zip` nos assets da release. A ferramenta usa a tag como versao, le as notas da release e baixa automaticamente o asset encontrado.
+Para publicar uma atualizacao, crie uma release no GitHub com a tag da versao, por exemplo `v1.1.44`, e anexe `EncutSetup.exe` ou `Encut_VERSAO.zip` nos assets da release. A ferramenta usa a tag como versao, le as notas da release e baixa automaticamente o asset encontrado.
 
-Se ainda nao houver release, a verificacao usa o proprio repositorio como fallback: le `VERSION` no branch configurado e baixa `EncutSetup.exe` desse mesmo branch.
+Se a release ainda nao existir ou estiver em uma versao antiga, a verificacao tambem usa o proprio repositorio como fallback: le `VERSION` no branch configurado e baixa `EncutSetup.exe` desse mesmo branch.
 
 Na interface, use o botao `Atualizar`. Pela linha de comando:
 

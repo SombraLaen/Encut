@@ -42,6 +42,7 @@ DEFAULT_GITHUB_REPO = "SombraLaen/Encut"
 DEFAULT_GITHUB_BRANCH = "main"
 DEFAULT_UPDATE_ENDPOINT_URL = "https://api.github.com/repos/SombraLaen/Encut/releases/latest"
 DEFAULT_DOWNLOAD_URL = ""
+APP_BASE_DIR = Path(__file__).resolve().parent
 VERSION_TRACKED_FILES = (
     "silence_cutter.py",
     "README.md",
@@ -58,7 +59,7 @@ VERSION_TRACKED_FILES = (
 
 
 def ensure_app_version() -> str:
-    base_dir = Path(__file__).resolve().parent
+    base_dir = APP_BASE_DIR
     version_path = base_dir / "VERSION"
     state_path = base_dir / ".version_state.json"
     changelog_path = base_dir / "CHANGELOG.md"
@@ -69,10 +70,12 @@ def ensure_app_version() -> str:
     if state:
         changed_files = _changed_tracked_files(state.get("files", {}), current_files)
         if changed_files:
-            previous_version = version
-            version = _bump_patch_version(version)
-            _write_version(version_path, version)
-            _append_changelog(changelog_path, version, previous_version, changed_files)
+            state_version = str(state.get("version", "")).strip()
+            if not state_version or state_version == version:
+                previous_version = version
+                version = _bump_patch_version(version)
+                _write_version(version_path, version)
+                _append_changelog(changelog_path, version, previous_version, changed_files)
     else:
         _write_version(version_path, version)
         if not changelog_path.exists():
@@ -166,13 +169,11 @@ def _append_changelog(
     previous_version: Optional[str],
     changed_files: list[str],
 ) -> None:
-    heading = "# Log de alteracoes\n\n"
     if changelog_path.exists():
-        existing = changelog_path.read_text(encoding="utf-8")
+        existing = changelog_path.read_text(encoding="utf-8-sig")
     else:
-        existing = heading
-    if not existing.startswith("# Log de alteracoes"):
-        existing = heading + existing
+        existing = ""
+    existing = _normalize_changelog_text(existing)
 
     date_text = datetime.now().isoformat(timespec="seconds")
     previous_text = f" de {previous_version}" if previous_version else ""
@@ -185,6 +186,26 @@ def _append_changelog(
     lines.append("")
     lines.append("")
     changelog_path.write_text(existing.rstrip() + "\n\n" + "\n".join(lines), encoding="utf-8")
+
+
+def _normalize_changelog_text(text: str) -> str:
+    heading_title = "# Log de alteracoes"
+    heading = f"{heading_title}\n\n"
+    garbled_bom_prefixes = ("\ufeff", "ï»¿", "Ã¯Â»Â¿", "ÃƒÂ¯Ã‚Â»Ã‚Â¿")
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    while True:
+        previous = text
+        for prefix in garbled_bom_prefixes:
+            if text.startswith(prefix):
+                text = text[len(prefix) :]
+                break
+        if text.startswith(heading_title):
+            text = text[len(heading_title) :].lstrip("\n")
+        if text == previous:
+            break
+
+    return heading + text.lstrip("\n")
 
 
 APP_VERSION = ensure_app_version()
@@ -359,17 +380,26 @@ def _hidden_subprocess_options() -> dict[str, object]:
     return options
 
 
+HIDDEN_SUBPROCESS_OPTIONS = _hidden_subprocess_options()
+
+
+def _subprocess_options(kwargs: dict[str, object]) -> dict[str, object]:
+    options = dict(HIDDEN_SUBPROCESS_OPTIONS)
+    options.update(kwargs)
+    return options
+
+
 def _run_process(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, **kwargs, **_hidden_subprocess_options())
+    return subprocess.run(cmd, **_subprocess_options(kwargs))
 
 
 def _popen_process(cmd: list[str], **kwargs: object) -> subprocess.Popen[str]:
-    return subprocess.Popen(cmd, **kwargs, **_hidden_subprocess_options())
+    return subprocess.Popen(cmd, **_subprocess_options(kwargs))
 
 
 
 def app_base_dir() -> Path:
-    return Path(__file__).resolve().parent
+    return APP_BASE_DIR
 
 
 def default_ffmpeg_path() -> str:
@@ -653,14 +683,22 @@ def check_for_update(manifest_url: str = "", timeout: int = 20, github_repo: str
         raise RuntimeError("Fonte de atualizacao nao configurada. Informe github_repo ou manifest_url.")
 
     if github_repo:
+        candidates: list[UpdateInfo] = []
         try:
             payload = _fetch_update_payload(manifest_url, timeout)
             if not isinstance(payload, dict):
                 raise RuntimeError("Resposta do GitHub invalida. O endpoint precisa retornar um release JSON.")
             update = _update_from_github_release(payload, manifest_url)
+            if update and is_newer_version(update.version):
+                candidates.append(update)
         except Exception:
+            pass
+        try:
             update = _update_from_github_repository(github_repo, github_branch, timeout)
-        candidates = [update] if update and is_newer_version(update.version) else []
+            if update and is_newer_version(update.version):
+                candidates.append(update)
+        except Exception:
+            pass
     else:
         payload = _fetch_update_payload(manifest_url, timeout)
         candidates = [candidate for candidate in _collect_update_candidates(payload, manifest_url) if is_newer_version(candidate.version)]
@@ -671,6 +709,8 @@ def check_for_update(manifest_url: str = "", timeout: int = 20, github_repo: str
     return candidates[0]
 
 def install_update(update: UpdateInfo, log: Callable[[str], None] = log_noop) -> None:
+    app_dir = app_base_dir()
+    update_log = app_dir / "instalacao" / f"instalador_update_{_safe_update_file_part(update.version)}.log"
     with tempfile.TemporaryDirectory(prefix="encut-update-") as temp_dir:
         temp_path = Path(temp_dir)
         if update.setup_url:
@@ -690,8 +730,9 @@ def install_update(update: UpdateInfo, log: Callable[[str], None] = log_noop) ->
                 raise RuntimeError("Hash SHA256 do pacote de atualizacao nao confere.")
 
         log("Executando instalador da atualizacao...")
+        log(f"Pasta de instalacao preservada: {app_dir}")
         proc = _run_process(
-            [str(setup_path), "/silent"],
+            [str(setup_path), f"/dir={app_dir}", "/silent", "/skip-update", f"/log={update_log}"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -699,6 +740,11 @@ def install_update(update: UpdateInfo, log: Callable[[str], None] = log_noop) ->
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "").strip()
             raise RuntimeError("Instalador da atualizacao falhou." + (f"\n{detail}" if detail else ""))
+
+
+def _safe_update_file_part(value: str) -> str:
+    safe = re.sub(r"[^0-9A-Za-z._-]+", "_", value or "").strip("._")
+    return safe or "update"
 
 
 def _download_update_file(url: str, destination: Path) -> None:
@@ -1917,10 +1963,6 @@ def _save_video_use_artifacts(report: dict[str, object], report_folder: Path, ba
         edl_path = report_folder / f"{base}_video_use_edl.json"
         edl_path.write_text(json.dumps(edl_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         video_use["edl_path"] = str(edl_path)
-
-
-def app_base_dir() -> Path:
-    return Path(__file__).resolve().parent
 
 
 def reports_path() -> Path:
