@@ -6,6 +6,7 @@ import os
 import queue
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -15,10 +16,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Optional
+
+try:
+    import numpy as np
+    HAS_NUMPY = True
+except ImportError:
+    HAS_NUMPY = False
 
 try:
     import tkinter as tk
@@ -785,7 +793,23 @@ def require_ffmpeg(ffmpeg_path: str) -> None:
         ) from exc
 
 
+_ffprobe_cache: dict[str, tuple[float, int, float]] = {}
+
+
+def _cache_key(ffmpeg_path: str, input_path: Path) -> str:
+    try:
+        stat = input_path.stat()
+        return f"{ffmpeg_path}|{input_path}|{stat.st_size}|{stat.st_mtime}"
+    except OSError:
+        return f"{ffmpeg_path}|{input_path}"
+
+
 def parse_duration(ffmpeg_path: str, input_path: Path) -> float:
+    key = _cache_key(ffmpeg_path, input_path)
+    cached = _ffprobe_cache.get(key)
+    if cached is not None:
+        return cached[0]
+
     ffprobe_path = _guess_ffprobe_path(ffmpeg_path)
     if ffprobe_path:
         cmd = [
@@ -800,7 +824,10 @@ def parse_duration(ffmpeg_path: str, input_path: Path) -> float:
         ]
         proc = _run_process(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         try:
-            return float((proc.stdout or "").strip())
+            duration = float((proc.stdout or "").strip())
+            if duration > 0:
+                _cache_put(key, duration)
+                return duration
         except ValueError:
             pass
 
@@ -816,10 +843,25 @@ def parse_duration(ffmpeg_path: str, input_path: Path) -> float:
     if not match:
         return 0.0
     hours, minutes, seconds = match.groups()
-    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    _cache_put(key, duration)
+    return duration
+
+
+def _cache_put(key: str, duration: float) -> None:
+    stream_count = 0
+    _ffprobe_cache[key] = (duration, stream_count, time.monotonic())
+    if len(_ffprobe_cache) > 32:
+        oldest_key = min(_ffprobe_cache, key=lambda k: _ffprobe_cache[k][2])
+        del _ffprobe_cache[oldest_key]
 
 
 def count_audio_streams(ffmpeg_path: str, input_path: Path) -> int:
+    key = _cache_key(ffmpeg_path, input_path)
+    cached = _ffprobe_cache.get(key)
+    if cached is not None and cached[1] > 0:
+        return cached[1]
+
     ffprobe_path = _guess_ffprobe_path(ffmpeg_path)
     if ffprobe_path:
         cmd = [
@@ -836,7 +878,9 @@ def count_audio_streams(ffmpeg_path: str, input_path: Path) -> int:
         ]
         proc = _run_process(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
         if proc.returncode == 0:
-            return len([line for line in (proc.stdout or "").splitlines() if line.strip()])
+            count = len([line for line in (proc.stdout or "").splitlines() if line.strip()])
+            _cache_update_streams(key, count)
+            return count
 
     cmd = [
         ffmpeg_path,
@@ -845,7 +889,17 @@ def count_audio_streams(ffmpeg_path: str, input_path: Path) -> int:
         str(input_path),
     ]
     proc = _run_process(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    return sum(1 for line in (proc.stderr or "").splitlines() if "Stream #" in line and "Audio:" in line)
+    count = sum(1 for line in (proc.stderr or "").splitlines() if "Stream #" in line and "Audio:" in line)
+    _cache_update_streams(key, count)
+    return count
+
+
+def _cache_update_streams(key: str, stream_count: int) -> None:
+    cached = _ffprobe_cache.get(key)
+    if cached is not None:
+        _ffprobe_cache[key] = (cached[0], stream_count, cached[2])
+    else:
+        _ffprobe_cache[key] = (0.0, stream_count, time.monotonic())
 
 
 def _guess_ffprobe_path(ffmpeg_path: str) -> Optional[str]:
@@ -1000,38 +1054,81 @@ def detect_speech_segments(
     buffer = b""
     started_at = time.monotonic()
     last_progress_log = 0.0
+    read_chunk_size = frame_bytes * 64
 
-    while True:
-        chunk = proc.stdout.read(frame_bytes * 100)
-        if not chunk:
-            break
-        buffer += chunk
-        usable = len(buffer) // frame_bytes * frame_bytes
-        frames_data = buffer[:usable]
-        buffer = buffer[usable:]
+    if HAS_NUMPY:
+        while True:
+            chunk = proc.stdout.read(read_chunk_size)
+            if not chunk:
+                break
+            buffer += chunk
+            usable = len(buffer) // frame_bytes * frame_bytes
+            frames_data = buffer[:usable]
+            buffer = buffer[usable:]
 
-        for offset in range(0, len(frames_data), frame_bytes):
-            frame = frames_data[offset : offset + frame_bytes]
-            frame_start = processed_frames * frame_ms / 1000
-            frame_end = frame_start + frame_ms / 1000
-            processed_frames += 1
+            arr = np.frombuffer(frames_data, dtype="<i2")
+            squared = arr.astype(np.float64) ** 2
+            frame_count = len(arr)
+            rms_values = 20.0 * np.log10(np.sqrt(np.maximum(np.mean(squared.reshape(-1, frame_bytes // 2), axis=1), 1e-12)) / 32768.0)
 
-            db = _pcm16le_rms_db(frame)
-            threshold = end_threshold if current_start is not None else start_threshold
-            has_voice = db >= threshold
-            if has_voice:
-                if current_start is None:
-                    current_start = frame_start
-                last_voice_end = frame_end
-            elif current_start is not None and last_voice_end is not None:
-                if frame_end - last_voice_end >= options.min_silence:
-                    _append_speech_segment(segments, current_start, last_voice_end, options.min_keep)
-                    current_start = None
-                    last_voice_end = None
+            for i in range(frame_count):
+                frame_start = processed_frames * frame_ms / 1000
+                frame_end = frame_start + frame_ms / 1000
+                processed_frames += 1
+
+                db = float(rms_values[i])
+                threshold = end_threshold if current_start is not None else start_threshold
+                has_voice = db >= threshold
+                if has_voice:
+                    if current_start is None:
+                        current_start = frame_start
+                    last_voice_end = frame_end
+                elif current_start is not None and last_voice_end is not None:
+                    if frame_end - last_voice_end >= options.min_silence:
+                        _append_speech_segment(segments, current_start, last_voice_end, options.min_keep)
+                        current_start = None
+                        last_voice_end = None
 
             if duration:
                 now = time.monotonic()
                 if now - last_progress_log >= 2:
+                    frame_end = processed_frames * frame_ms / 1000
+                    percent = min(100.0, frame_end / duration * 100)
+                    log(_progress_line("Analisando fala", percent, now - started_at))
+                    last_progress_log = now
+    else:
+        while True:
+            chunk = proc.stdout.read(read_chunk_size)
+            if not chunk:
+                break
+            buffer += chunk
+            usable = len(buffer) // frame_bytes * frame_bytes
+            frames_data = buffer[:usable]
+            buffer = buffer[usable:]
+
+            for offset in range(0, len(frames_data), frame_bytes):
+                frame = frames_data[offset : offset + frame_bytes]
+                frame_start = processed_frames * frame_ms / 1000
+                frame_end = frame_start + frame_ms / 1000
+                processed_frames += 1
+
+                db = _pcm16le_rms_db(frame)
+                threshold = end_threshold if current_start is not None else start_threshold
+                has_voice = db >= threshold
+                if has_voice:
+                    if current_start is None:
+                        current_start = frame_start
+                    last_voice_end = frame_end
+                elif current_start is not None and last_voice_end is not None:
+                    if frame_end - last_voice_end >= options.min_silence:
+                        _append_speech_segment(segments, current_start, last_voice_end, options.min_keep)
+                        current_start = None
+                        last_voice_end = None
+
+            if duration:
+                now = time.monotonic()
+                if now - last_progress_log >= 2:
+                    frame_end = processed_frames * frame_ms / 1000
                     percent = min(100.0, frame_end / duration * 100)
                     log(_progress_line("Analisando fala", percent, now - started_at))
                     last_progress_log = now
@@ -1424,11 +1521,15 @@ def _pcm16le_rms_db(frame: bytes) -> float:
     if sample_count == 0:
         return -120.0
 
-    total = 0
-    for index in range(0, sample_count * 2, 2):
-        sample = int.from_bytes(frame[index : index + 2], "little", signed=True)
-        total += sample * sample
-    rms = math.sqrt(total / sample_count)
+    if HAS_NUMPY and sample_count > 64:
+        arr = np.frombuffer(frame, dtype="<i2", count=sample_count)
+        rms = float(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
+    else:
+        fmt = f"<{sample_count}h"
+        samples = struct.unpack(fmt, frame[: sample_count * 2])
+        total = sum(s * s for s in samples)
+        rms = math.sqrt(total / sample_count)
+
     if rms <= 0:
         return -120.0
     return 20 * math.log10(rms / 32768.0)
@@ -1623,23 +1724,53 @@ def cut_video(options: CutterOptions, log: Callable[[str], None] = log_noop) -> 
     with tempfile.TemporaryDirectory(prefix=".silence-cutter-", dir=str(options.output_path.parent)) as temp_dir:
         temp_path = Path(temp_dir)
         list_path = temp_path / "segments.txt"
-        part_paths = []
+        total_segments = len(keep_segments)
+        part_paths = [temp_path / f"part_{index:05d}.mp4" for index in range(total_segments + 1)]
+        progress_state = {"completed": 0, "lock": threading.Lock()}
 
-        for index, segment in enumerate(keep_segments, start=1):
-            part_path = temp_path / f"part_{index:05d}.mp4"
-            part_paths.append(part_path)
-            elapsed = time.monotonic() - workflow_started_at
-            percent = (index - 1) / len(keep_segments) * 100
-            log(
-                f"Cortando trecho {index}/{len(keep_segments)} "
-                f"({_format_seconds(segment.start)} -> {_format_seconds(segment.end)}) | "
-                f"{_progress_line('Progresso', percent, elapsed)}"
-            )
-            _extract_segment(options, segment, part_path, audio_stream_count, index, len(keep_segments))
+        def extract_one(args: tuple[int, Segment]) -> tuple[int, bool]:
+            idx, seg = args
+            part_path = part_paths[idx]
+            try:
+                _extract_segment(options, seg, part_path, audio_stream_count, idx, total_segments)
+                return (idx, True)
+            except Exception:
+                return (idx, False)
+
+        use_parallel = options.mode == "copy" and total_segments > 2
+        if use_parallel:
+            max_workers = min(4, total_segments)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(extract_one, (i, seg)): i for i, seg in enumerate(keep_segments, start=1)}
+                for future in as_completed(futures):
+                    idx, success = future.result()
+                    with progress_state["lock"]:
+                        progress_state["completed"] += 1
+                        completed = progress_state["completed"]
+                        elapsed = time.monotonic() - workflow_started_at
+                        percent = completed / total_segments * 100
+                        if not success:
+                            log(f"ERRO no trecho {idx}/{total_segments}")
+                        else:
+                            log(
+                                f"Cortando trecho {completed}/{total_segments} | "
+                                f"{_progress_line('Progresso', percent, elapsed)}"
+                            )
+        else:
+            for index, segment in enumerate(keep_segments, start=1):
+                part_path = part_paths[index]
+                elapsed = time.monotonic() - workflow_started_at
+                percent = (index - 1) / total_segments * 100
+                log(
+                    f"Cortando trecho {index}/{total_segments} "
+                    f"({_format_seconds(segment.start)} -> {_format_seconds(segment.end)}) | "
+                    f"{_progress_line('Progresso', percent, elapsed)}"
+                )
+                _extract_segment(options, segment, part_path, audio_stream_count, index, total_segments)
 
         with list_path.open("w", encoding="utf-8") as handle:
-            for part_path in part_paths:
-                safe = str(part_path).replace("\\", "/").replace("'", "'\\''")
+            for idx in range(1, len(keep_segments) + 1):
+                safe = str(part_paths[idx]).replace("\\", "/").replace("'", "'\\''")
                 handle.write(f"file '{safe}'\n")
 
         log("Juntando trechos finais...")
@@ -2694,8 +2825,8 @@ class SilenceCutterApp:
 
         self.root = tk.Tk()
         self.root.title(f"Encut v{APP_VERSION}")
-        self.root.geometry("880x640")
-        self.root.minsize(800, 580)
+        self.root.geometry("920x700")
+        self.root.minsize(820, 620)
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.worker: Optional[threading.Thread] = None
         self.update_worker: Optional[threading.Thread] = None
@@ -2704,6 +2835,8 @@ class SilenceCutterApp:
         self.input_paths: list[Path] = []
         self.presets = load_presets()
         self.ui_preferences = load_ui_preferences()
+        self.cancel_requested = threading.Event()
+        self.video_info: Optional[dict[str, object]] = None
 
         ffmpeg_default = default_ffmpeg_path()
         ffmpeg_found = "" if ffmpeg_default == "ffmpeg" else ffmpeg_default
@@ -2723,8 +2856,16 @@ class SilenceCutterApp:
         self.status_var = tk.StringVar(value="Selecione um ou mais videos para comecar.")
 
         self._build_ui()
+        self._setup_shortcuts()
         self.root.after(100, self._drain_events)
         self.root.after(1200, self._check_updates_on_startup)
+
+    def _setup_shortcuts(self) -> None:
+        self.root.bind("<Control-o>", lambda _: self._pick_input())
+        self.root.bind("<Control-O>", lambda _: self._pick_input())
+        self.root.bind("<Return>", lambda _: self._start() if self.start_button.instate(["normal"]) else None)
+        self.root.bind("<Escape>", lambda _: self._cancel() if self.cancel_button.instate(["!disabled"]) else None)
+        self.root.bind("<F5>", lambda _: self._check_updates(auto=False) if not (self.update_worker and self.update_worker.is_alive()) else None)
 
     def _apply_theme(self) -> None:
         if self.dark_mode_var.get():
@@ -2800,6 +2941,15 @@ class SilenceCutterApp:
                 fg=self.colors["log_text"],
                 insertbackground=self.colors["log_text"],
             )
+        if hasattr(self, "file_listbox"):
+            self.file_listbox.configure(
+                bg=self.colors["entry"],
+                fg=self.colors["text"],
+                selectbackground=self.colors["accent"],
+                selectforeground=self.colors["accent_text"],
+                borderwidth=1,
+                relief="solid",
+            )
 
     def _build_ui(self) -> None:
         self._apply_theme()
@@ -2807,7 +2957,7 @@ class SilenceCutterApp:
         main = ttk.Frame(self.root, padding=(22, 18, 22, 18))
         main.pack(fill="both", expand=True)
         main.columnconfigure(1, weight=1)
-        main.rowconfigure(6, weight=1)
+        main.rowconfigure(8, weight=1)
 
         toolbar = ttk.Frame(main, style="Toolbar.TFrame")
         toolbar.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 14))
@@ -2821,8 +2971,29 @@ class SilenceCutterApp:
         files = ttk.LabelFrame(main, text="Entrada", style="Section.TLabelframe", padding=(14, 12))
         files.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 12))
         files.columnconfigure(1, weight=1)
-        self._file_row(files, 0, "Videos", self.input_var, self._pick_input, HELP_TEXTS["videos"])
-        self._file_row(files, 1, "Saida", self.output_var, self._pick_output, HELP_TEXTS["output"])
+
+        input_header = ttk.Frame(files)
+        input_header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 6))
+        self._label_with_help(input_header, "Videos", HELP_TEXTS["videos"]).pack(side="left")
+        ttk.Button(input_header, text="+ Adicionar", command=self._pick_input, style="Ghost.TButton").pack(side="right", padx=(4, 0))
+        ttk.Button(input_header, text="Limpar", command=self._clear_input, style="Ghost.TButton").pack(side="right")
+
+        list_frame = ttk.Frame(files)
+        list_frame.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        list_frame.columnconfigure(0, weight=1)
+
+        self.file_listbox = tk.Listbox(list_frame, height=3, font=("Segoe UI", 9), selectmode="extended")
+        self.file_listbox.grid(row=0, column=0, sticky="ew")
+        file_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.file_listbox.yview)
+        file_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.file_listbox.configure(yscrollcommand=file_scrollbar.set)
+
+        remove_btn = ttk.Button(list_frame, text="Remover selecionados", command=self._remove_selected_files, style="Ghost.TButton")
+        remove_btn.grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        self.input_var.set("")
+
+        self._file_row(files, 2, "Saida", self.output_var, self._pick_output, HELP_TEXTS["output"])
 
         quick_settings = ttk.LabelFrame(main, text="Corte", style="Section.TLabelframe", padding=(14, 12))
         quick_settings.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(0, 12))
@@ -2850,20 +3021,39 @@ class SilenceCutterApp:
         self._refresh_preset_combo()
 
         actions = ttk.Frame(main)
-        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 12))
+        actions.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(0, 10))
         start_group = ttk.Frame(actions)
         start_group.pack(side="left")
         self.start_button = ttk.Button(start_group, text="Cortar silencio", command=self._start, style="Accent.TButton")
         self.start_button.pack(side="left")
         self._help_icon(start_group, HELP_TEXTS["start"]).pack(side="left", padx=(4, 0))
 
+        cancel_group = ttk.Frame(actions)
+        cancel_group.pack(side="left", padx=8)
+        self.cancel_button = ttk.Button(cancel_group, text="Cancelar", command=self._cancel, state="disabled")
+        self.cancel_button.pack(side="left")
+
         clear_group = ttk.Frame(actions)
-        clear_group.pack(side="left", padx=8)
+        clear_group.pack(side="left", padx=4)
         ttk.Button(clear_group, text="Limpar log", command=self._clear_log).pack(side="left")
         self._help_icon(clear_group, HELP_TEXTS["clear_log"]).pack(side="left", padx=(4, 0))
 
-        self.log_text = tk.Text(main, height=12, wrap="word")
-        self.log_text.grid(row=6, column=0, columnspan=3, sticky="nsew")
+        progress_frame = ttk.Frame(main)
+        progress_frame.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+        progress_frame.columnconfigure(0, weight=1)
+        self.progress_bar = ttk.Progressbar(progress_frame, mode="determinate", maximum=100)
+        self.progress_bar.grid(row=0, column=0, sticky="ew")
+        self.progress_label = ttk.Label(progress_frame, text="", style="Muted.TLabel")
+        self.progress_label.grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        info_frame = ttk.LabelFrame(main, text="Info do video", style="Section.TLabelframe", padding=(10, 8))
+        info_frame.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        info_frame.columnconfigure(1, weight=1)
+        self.video_info_label = ttk.Label(info_frame, text="Nenhum video selecionado.", style="PanelMuted.TLabel")
+        self.video_info_label.grid(row=0, column=0, sticky="w")
+
+        self.log_text = tk.Text(main, height=10, wrap="word")
+        self.log_text.grid(row=8, column=0, columnspan=3, sticky="nsew")
         self.log_text.configure(
             state="disabled",
             bg=self.colors["log_bg"],
@@ -2874,6 +3064,10 @@ class SilenceCutterApp:
             pady=10,
             font=("Consolas", 9),
         )
+        self.log_text.tag_configure("error", foreground="#ff6b6b")
+        self.log_text.tag_configure("success", foreground="#69db7c")
+        self.log_text.tag_configure("info", foreground="#74c0fc")
+        self.log_text.tag_configure("warning", foreground="#ffd43b")
 
     def _open_settings(self) -> None:
         if self.settings_window is not None and self.settings_window.winfo_exists():
@@ -3069,19 +3263,50 @@ class SilenceCutterApp:
             filetypes=[("Videos", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v"), ("Todos", "*.*")],
         )
         if paths:
-            self.input_paths = [Path(path) for path in paths]
-            if len(self.input_paths) == 1:
-                current = self.input_paths[0]
-                self.input_var.set(str(current))
-                self.output_var.set(str(current.with_name(f"{current.stem}_sem_silencio.mp4")))
-                self.status_var.set("1 video selecionado.")
-            else:
-                preview = ", ".join(path.name for path in self.input_paths[:3])
-                if len(self.input_paths) > 3:
-                    preview += ", ..."
-                self.input_var.set(f"{len(self.input_paths)} videos selecionados: {preview}")
-                self.output_var.set(str(self.input_paths[0].parent / "sem_silencio"))
-                self.status_var.set(f"{len(self.input_paths)} videos selecionados.")
+            existing = set(self.input_paths)
+            new_paths = [Path(p) for p in paths if Path(p) not in existing]
+            if not new_paths and paths:
+                return
+            self.input_paths.extend(new_paths)
+            for path in new_paths:
+                self.file_listbox.insert("end", str(path))
+            self._update_input_display()
+
+    def _remove_selected_files(self) -> None:
+        selected = list(self.file_listbox.curselection())
+        if not selected:
+            return
+        for idx in reversed(selected):
+            self.file_listbox.delete(idx)
+            if 0 <= idx < len(self.input_paths):
+                self.input_paths.pop(idx)
+        self._update_input_display()
+
+    def _clear_input(self) -> None:
+        self.input_paths.clear()
+        self.file_listbox.delete(0, "end")
+        self.input_var.set("")
+        self.output_var.set("")
+        self.video_info_label.configure(text="Nenhum video selecionado.")
+        self.status_var.set("Selecione um ou mais videos para comecar.")
+
+    def _update_input_display(self) -> None:
+        count = len(self.input_paths)
+        if count == 0:
+            self.input_var.set("")
+            self.output_var.set("")
+            self.video_info_label.configure(text="Nenhum video selecionado.")
+        elif count == 1:
+            current = self.input_paths[0]
+            self.input_var.set(str(current))
+            self.output_var.set(str(current.with_name(f"{current.stem}_sem_silencio.mp4")))
+            self.status_var.set("1 video selecionado.")
+            self._update_video_info(current)
+        else:
+            self.input_var.set(str(self.input_paths[0].parent))
+            self.output_var.set(str(self.input_paths[0].parent / "sem_silencio"))
+            self.status_var.set(f"{count} videos selecionados.")
+            self.video_info_label.configure(text=f"{count} videos selecionados")
 
     def _pick_output(self) -> None:
         if len(self.input_paths) > 1:
@@ -3171,7 +3396,10 @@ class SilenceCutterApp:
             messagebox.showerror("Ajustes invalidos", str(exc))
             return
 
+        self.cancel_requested.clear()
         self.start_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+        self._update_progress(0, "Iniciando...")
         self.status_var.set("Processando...")
         if len(options) == 1:
             self._append_log(f"Iniciando corte de silencio | versao {APP_VERSION}.")
@@ -3181,10 +3409,9 @@ class SilenceCutterApp:
         self.worker.start()
 
     def _options_from_ui(self) -> list[CutterOptions]:
-        input_text = self.input_var.get().strip()
         output_text = self.output_var.get().strip()
         ffmpeg_path = self.ffmpeg_var.get().strip() or default_ffmpeg_path()
-        input_paths = self.input_paths or ([Path(input_text)] if input_text else [])
+        input_paths = list(self.input_paths)
         if not input_paths:
             raise ValueError("Selecione o video de entrada.")
         if not output_text:
@@ -3229,20 +3456,36 @@ class SilenceCutterApp:
                 self._append_log(text)
                 if text.startswith("Analisando:") or text.startswith("Lote ") or "Progresso:" in text:
                     self.status_var.set(text)
+                    if "Progresso:" in text:
+                        try:
+                            percent_str = text.split("Progresso:")[1].split("%")[0].strip()
+                            self._update_progress(float(percent_str), text)
+                        except (ValueError, IndexError):
+                            pass
+            elif kind == "progress":
+                percent, label = text
+                self._update_progress(percent, label)
+                self.status_var.set(label)
             elif kind == "error":
                 self.start_button.configure(state="normal")
+                self.cancel_button.configure(state="disabled")
+                self._update_progress(0, "")
                 self.status_var.set("Erro.")
-                self._append_log(f"ERRO: {text}")
+                self._append_log(f"ERRO: {text}", "error")
                 messagebox.showerror("Erro", text)
             elif kind == "done":
                 self.start_button.configure(state="normal")
+                self.cancel_button.configure(state="disabled")
+                self._update_progress(100, "Concluido")
                 self.status_var.set("Concluido.")
-                self._append_log(f"Concluido: {text}")
+                self._append_log(f"Concluido: {text}", "success")
                 messagebox.showinfo("Concluido", f"Video salvo em:\n{text}")
             elif kind == "batch_done":
                 self.start_button.configure(state="normal")
+                self.cancel_button.configure(state="disabled")
+                self._update_progress(100, "Lote concluido")
                 self.status_var.set("Lote concluido.")
-                self._append_log(f"Lote concluido: {text}")
+                self._append_log(f"Lote concluido: {text}", "success")
                 messagebox.showinfo("Lote concluido", str(text))
             elif kind == "update_status":
                 self._set_update_button_state("normal")
@@ -3252,7 +3495,7 @@ class SilenceCutterApp:
             elif kind == "update_error":
                 self._set_update_button_state("normal")
                 self.status_var.set("Erro na atualizacao.")
-                self._append_log(f"ERRO NA ATUALIZACAO: {text}")
+                self._append_log(f"ERRO NA ATUALIZACAO: {text}", "error")
                 messagebox.showerror("Atualizacao", str(text))
             elif kind == "update_available":
                 self._set_update_button_state("normal")
@@ -3261,21 +3504,54 @@ class SilenceCutterApp:
                 if update.notes:
                     details += f"\n\nNotas:\n{update.notes}"
                 details += "\n\nBaixar e instalar agora?"
-                self._append_log(f"Atualizacao disponivel: v{update.version}")
+                self._append_log(f"Atualizacao disponivel: v{update.version}", "info")
                 if messagebox.askyesno("Atualizacao disponivel", details):
                     self._start_update_install(update)
             elif kind == "update_done":
                 self._set_update_button_state("normal")
                 self.status_var.set("Atualizacao instalada.")
-                self._append_log(f"Atualizacao instalada: v{text}")
+                self._append_log(f"Atualizacao instalada: v{text}", "success")
                 messagebox.showinfo("Atualizacao instalada", f"Encut v{text} foi instalado. Feche e abra o aplicativo para usar a nova versao.")
         self.root.after(100, self._drain_events)
 
-    def _append_log(self, text: str) -> None:
+    def _append_log(self, text: str, tag: str = "") -> None:
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", text + os.linesep)
+        if tag:
+            self.log_text.insert("end", text + os.linesep, tag)
+        elif text.startswith("ERRO") or text.startswith("Falha") or "falhou" in text.lower():
+            self.log_text.insert("end", text + os.linesep, "error")
+        elif text.startswith("Concluido") or text.startswith("Pronto") or "sucesso" in text.lower():
+            self.log_text.insert("end", text + os.linesep, "success")
+        elif text.startswith("Atencao") or text.startswith("AVISO"):
+            self.log_text.insert("end", text + os.linesep, "warning")
+        else:
+            self.log_text.insert("end", text + os.linesep)
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _cancel(self) -> None:
+        if self.worker and self.worker.is_alive():
+            self.cancel_requested.set()
+            self._append_log("Cancelamento solicitado. Aguardando...", "warning")
+            self.status_var.set("Cancelando...")
+
+    def _update_progress(self, percent: float, label: str = "") -> None:
+        self.progress_bar["value"] = percent
+        if label:
+            self.progress_label.configure(text=label)
+
+    def _update_video_info(self, path: Path) -> None:
+        try:
+            size = path.stat().st_size
+            size_str = _format_bytes(size)
+            ffmpeg_path = self.ffmpeg_var.get().strip() or default_ffmpeg_path()
+            duration = parse_duration(ffmpeg_path, path)
+            duration_str = _format_duration(duration) if duration > 0 else "calculando..."
+            streams = count_audio_streams(ffmpeg_path, path)
+            info = f"{path.name}  |  {duration_str}  |  {size_str}  |  {streams} faixa(s) de audio"
+            self.video_info_label.configure(text=info)
+        except Exception:
+            self.video_info_label.configure(text=f"{path.name}  |  info indisponivel")
 
     def _clear_log(self) -> None:
         self.log_text.configure(state="normal")
