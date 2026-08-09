@@ -15,6 +15,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import webbrowser
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
@@ -2964,8 +2965,11 @@ class SilenceCutterApp:
         toolbar.columnconfigure(1, weight=1)
         ttk.Label(toolbar, text=f"Encut v{APP_VERSION}", font=("Segoe UI Semibold", 11), style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(toolbar, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=12)
+        github_button = ttk.Button(toolbar, text="GitHub", width=7, command=self._open_github, style="Icon.TButton")
+        github_button.grid(row=0, column=2, sticky="e", padx=(0, 6))
+        HoverTip(github_button, "Abrir repositorio no GitHub")
         settings_button = ttk.Button(toolbar, text="⚙", width=3, command=self._open_settings, style="Icon.TButton")
-        settings_button.grid(row=0, column=2, sticky="e")
+        settings_button.grid(row=0, column=3, sticky="e")
         HoverTip(settings_button, "Abrir configuracoes")
 
         files = ttk.LabelFrame(main, text="Entrada", style="Section.TLabelframe", padding=(14, 12))
@@ -3528,6 +3532,16 @@ class SilenceCutterApp:
             self.log_text.insert("end", text + os.linesep)
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _open_github(self) -> None:
+        config = load_update_config()
+        repo = str(config.get("github_repo", "")).strip()
+        if repo:
+            url = f"https://github.com/{repo}"
+        else:
+            url = "https://github.com/SombraLaen/Encut"
+        webbrowser.open(url)
+        self._append_log(f"Abrindo navegador: {url}", "info")
 
     def _cancel(self) -> None:
         if self.worker and self.worker.is_alive():
