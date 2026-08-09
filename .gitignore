@@ -1,21 +1,52 @@
+﻿# Build artifacts
+dist/
+dist_encut/
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
 
-# Local dependency/runtime downloads
+# Nuitka
+*.build/
+*.onefile-build/
+.sconsign-*.dblite
+scons-*
+ccache-*
+@link_input.txt
+*.o
+*.obj
+*.lib
+*.exp
+
+# Encoded data files
+*.const
+__constant.bin
+__payload.bin
+blobs/
+static_src/
+
+# Runtime (downloaded by installer)
 runtime/
 
-# Generated reports, logs, and installer state
+# Old launchers
+EncutSetup.exe
+encut_launcher.pyw
+iniciar_web.vbs
+build_exe.ps1
+
+# Reports
 relatorios/
+
+# Instalacao
 instalacao/
-*.log
 
-# Generated site/upload packages
-dist_site/
-PythonRuntime-*.zip
+# IDE
+.vscode/
+.idea/
+*.swp
 
-# Local version bookkeeping
+# OS
+Thumbs.db
+.DS_Store
+
 .version_state.json
-
-# Local Codex skill workspace
-.agents/
-skills-lock.json
