@@ -2965,11 +2965,14 @@ class SilenceCutterApp:
         toolbar.columnconfigure(1, weight=1)
         ttk.Label(toolbar, text=f"Encut v{APP_VERSION}", font=("Segoe UI Semibold", 11), style="Muted.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(toolbar, textvariable=self.status_var, style="Muted.TLabel").grid(row=0, column=1, sticky="e", padx=12)
+        web_button = ttk.Button(toolbar, text="Web", width=5, command=self._open_web, style="Icon.TButton")
+        web_button.grid(row=0, column=2, sticky="e", padx=(0, 6))
+        HoverTip(web_button, "Abrir versao web no navegador")
         github_button = ttk.Button(toolbar, text="GitHub", width=7, command=self._open_github, style="Icon.TButton")
-        github_button.grid(row=0, column=2, sticky="e", padx=(0, 6))
+        github_button.grid(row=0, column=3, sticky="e", padx=(0, 6))
         HoverTip(github_button, "Abrir repositorio no GitHub")
         settings_button = ttk.Button(toolbar, text="⚙", width=3, command=self._open_settings, style="Icon.TButton")
-        settings_button.grid(row=0, column=3, sticky="e")
+        settings_button.grid(row=0, column=4, sticky="e")
         HoverTip(settings_button, "Abrir configuracoes")
 
         files = ttk.LabelFrame(main, text="Entrada", style="Section.TLabelframe", padding=(14, 12))
@@ -3543,6 +3546,15 @@ class SilenceCutterApp:
         webbrowser.open(url)
         self._append_log(f"Abrindo navegador: {url}", "info")
 
+    def _open_web(self) -> None:
+        try:
+            from encut_web import start_web_server
+            start_web_server(open_browser=True)
+            self._append_log("Versao web iniciada em http://127.0.0.1:8765", "info")
+            self.status_var.set("Versao web iniciada.")
+        except Exception as exc:
+            self._append_log(f"Erro ao iniciar versao web: {exc}", "error")
+
     def _cancel(self) -> None:
         if self.worker and self.worker.is_alive():
             self.cancel_requested.set()
@@ -3597,7 +3609,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--update-manifest", help="URL do update.json usado para verificar atualizacoes")
     parser.add_argument("--github-repo", help="Repositorio GitHub usado para verificar releases, ex: SombraLaen/Encut")
     parser.add_argument("--github-branch", default="", help="Branch usado como fallback quando nao houver release no GitHub")
-    return parser.parse_args(argv)
+    parser.add_argument("--web", action="store_true", help="Abrir interface web no navegador")
+    return parser.add_args(argv)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -3626,6 +3639,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             print(f"Atualizacao instalada: v{update.version}. Reabra o Encut.")
         return 0
     if args.gui or not args.paths:
+        if args.web:
+            from encut_web import start_web_server
+            start_web_server(open_browser=True)
+            return 0
         app = SilenceCutterApp()
         app.run()
         return 0
