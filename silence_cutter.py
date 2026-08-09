@@ -3610,7 +3610,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--github-repo", help="Repositorio GitHub usado para verificar releases, ex: SombraLaen/Encut")
     parser.add_argument("--github-branch", default="", help="Branch usado como fallback quando nao houver release no GitHub")
     parser.add_argument("--web", action="store_true", help="Abrir interface web no navegador")
-    return parser.add_args(argv)
+    return parser.parse_args(argv)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
